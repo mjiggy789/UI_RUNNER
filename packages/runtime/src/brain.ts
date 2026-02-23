@@ -313,6 +313,7 @@ export class Brain {
     strictMode: boolean = false;
     platformHistory: number[] = [];
     recentArrivals: number[] = [];
+    recentWarpDestinations: number[] = [];
     visitCounts: Map<number, number> = new Map();  // ID → visit count
     highestReached: number = Infinity;              // lowest Y value (highest point) bot has stood on
     log: BrainLogEntry[] = [];
@@ -661,7 +662,9 @@ export class Brain {
         this.retryCount = 0;
         this.platformHistory = [];
         this.recentArrivals = [];
+        this.recentWarpDestinations = [];
         this.visitCounts.clear();
+        this.lockFailCount = 0;
         this.highestReached = Infinity;
 
         this.manualTargetY = null;
@@ -3594,7 +3597,7 @@ export class Brain {
     private triggerLoopHardFallback(pose: Pose, signature: string, reason: string) {
         const botCx = pose.x + pose.width / 2;
         const botFeetY = pose.y + pose.height;
-        const primeFallbackTarget = (pick: Collider, mode: 'local-random' | 'global-nearest' | 'local-reachable') => {
+        const primeFallbackTarget = (pick: Collider, mode: 'local-random' | 'global-nearest' | 'local-reachable' | 'local-reachable-biased') => {
             this.lockedTargetId = pick.id;
             this.setStationaryPlatformTarget(pick, botCx, true);
             this.currentState = 'seek';
@@ -3609,6 +3612,8 @@ export class Brain {
             this.dropGroundId = null;
             this.dropLockTimer = 0;
             this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, 0.3);
+            this.recentWarpDestinations.push(pick.id);
+            if (this.recentWarpDestinations.length > 5) this.recentWarpDestinations.shift();
             this.recordLog('LOOP_FALLBACK', pose, `sig=${signature} ${reason}: ${mode} ID${pick.id}`);
         };
         const searchAABB: AABB = {
@@ -3622,32 +3627,46 @@ export class Brain {
             if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
             if (this.targetPlatform && c.id === this.targetPlatform.id) return false;
             if (pose.grounded && pose.groundedId === c.id) return false;
+            if (this.recentWarpDestinations.includes(c.id)) return false;
             return true;
         });
 
         const idleTime = LOOP_FALLBACK_IDLE_MIN + Math.random() * (LOOP_FALLBACK_IDLE_MAX - LOOP_FALLBACK_IDLE_MIN);
-        if (pool.length > 0) {
-            if (pose.grounded && pose.groundedId !== null) {
-                const startId = pose.groundedId;
-                const reachablePool = pool.filter((c) =>
-                    this.findPathWithContext(startId, c.id, pose, true) !== null
-                );
-                if (reachablePool.length > 0) {
-                    const pick = reachablePool[Math.floor(Math.random() * reachablePool.length)];
-                    primeFallbackTarget(pick, 'local-reachable');
-                    return;
-                }
-            } else {
-                const pick = pool[Math.floor(Math.random() * pool.length)];
-                primeFallbackTarget(pick, 'local-random');
+        if (pool.length > 0 && pose.grounded && pose.groundedId !== null) {
+            const startId = pose.groundedId;
+            const reachablePool = pool.filter((c) =>
+                this.findPathWithContext(startId, c.id, pose, true) !== null
+            );
+            if (reachablePool.length > 0) {
+                // Select with bias toward escaping local region (furthest)
+                reachablePool.sort((a, b) => {
+                    const distA = Math.hypot(((a.aabb.x1 + a.aabb.x2) / 2) - botCx, a.aabb.y1 - botFeetY);
+                    const distB = Math.hypot(((b.aabb.x1 + b.aabb.x2) / 2) - botCx, b.aabb.y1 - botFeetY);
+                    return distB - distA; // Descending
+                });
+                const topCount = Math.min(3, reachablePool.length);
+                const pick = reachablePool[Math.floor(Math.random() * topCount)];
+                primeFallbackTarget(pick, 'local-reachable-biased');
                 return;
             }
+        } else if (pool.length > 0 && !pose.grounded) {
+            const pick = pool[Math.floor(Math.random() * pool.length)];
+            primeFallbackTarget(pick, 'local-random');
+            return;
+        }
+
+        // If reachable set is empty, escalate to non-local escape strategy
+        if (this.tryPickCoordinateTarget(pose, this.world.getAll(), true)) {
+            this.recordLog('LOOP_FALLBACK', pose, `sig=${signature} ${reason}: escalated to non-local coord`);
+            return;
         }
 
         const globalPool = this.world.getAll().filter((c) => {
             if (c.kind !== 'rect' || !c.flags.solid) return false;
             if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
             if (this.targetPlatform && c.id === this.targetPlatform.id) return false;
+            if (pose.grounded && pose.groundedId === c.id) return false;
+            if (this.recentWarpDestinations.includes(c.id)) return false;
             return true;
         });
         if (globalPool.length > 0) {
@@ -4015,6 +4034,22 @@ export class Brain {
             ((this.stallTimer > LOOP_DETECT_STALL && this.facingFlipCount >= LOOP_DETECT_FLIPS) ||
             this.facingFlipCount > 12);
         if (loopDetected) {
+            this.lockFailCount++;
+            if (this.lockFailCount >= 4 && this.lockedTargetId !== null) {
+                this.recordLog('LOCK_GIVE_UP', pose, `glitch-loop limit ${this.lockFailCount} >= 4`);
+                this.clearTargetLock();
+                this.targetPlatform = null;
+                this.targetX = null;
+                this.autoTargetY = null;
+                this.currentState = 'idle';
+                this.navState = 'nav-align';
+                this.takeoffZone = null;
+                this.patienceTimer = 0;
+                this.resetManeuverTracking();
+                // Return true to signal loop was handled (by aborting)
+                return true;
+            }
+
             const commitWindow = this.getPingPongCommitWindow();
             const preferredCommitDir: -1 | 1 = moveDx >= 0 ? 1 : -1;
             this.recordLog(
