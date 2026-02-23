@@ -285,6 +285,7 @@ export interface BrainDebugSnapshot {
     maneuverLOS: boolean;
     maneuverVerticalGain: number | null;
     maneuverStagnation: number;
+    maneuverCommitted?: boolean;
     timers: {
         progressStagnation: number;
         jumpCooldown: number;
@@ -398,6 +399,7 @@ export class Brain {
     bestVerticalGain: number = Number.NEGATIVE_INFINITY;
     maneuverStagnationTimer: number = 0;
     maneuverStartFeetY: number | null = null;
+    maneuverCommitted: boolean = false;
     graph: NavGraph;
     debugSnapshot: BrainDebugSnapshot = {
         tick: 0,
@@ -460,6 +462,7 @@ export class Brain {
         maneuverLOS: false,
         maneuverVerticalGain: null,
         maneuverStagnation: 0,
+        maneuverCommitted: false,
         timers: {
             progressStagnation: 0,
             jumpCooldown: 0,
@@ -1019,6 +1022,7 @@ export class Brain {
             this.maneuverStartFeetY = null;
             this.approachPhase = 'direct';
             this.approachX = null;
+            this.maneuverCommitted = false;
             return;
         }
 
@@ -1037,6 +1041,7 @@ export class Brain {
             this.bestVerticalGain = Number.NEGATIVE_INFINITY;
             this.maneuverStagnationTimer = 0;
             this.maneuverStartFeetY = pose.y + pose.height;
+            this.maneuverCommitted = false;
 
             // --- Backup & Charge Logic ---
             const needsSpeed = edge.action === 'jump-gap' || edge.action === 'jump-high';
@@ -1070,10 +1075,27 @@ export class Brain {
     }
 
     private syncActiveManeuver(pose: Pose) {
-        if (!this.targetPlatform || pose.groundedId === null || !pose.grounded) {
+        if (!this.targetPlatform) {
             this.setActiveManeuver(null, null, pose);
             return;
         }
+
+        if (!pose.grounded) {
+            if (this.activeManeuver) {
+                this.maneuverCommitted = true;
+            }
+            return;
+        }
+
+        if (this.activeManeuver && this.maneuverCommitted && pose.groundedId === this.activeManeuverFromId) {
+            this.invalidateActiveManeuver(pose, 'missed-landing', 5000);
+        }
+
+        if (pose.groundedId === null) {
+            this.setActiveManeuver(null, null, pose);
+            return;
+        }
+
         const edge = this.graph.getBestEdge(
             pose.groundedId,
             this.targetPlatform.id,
@@ -1171,6 +1193,7 @@ export class Brain {
         this.bestLOS = 0;
         this.bestVerticalGain = Number.NEGATIVE_INFINITY;
         this.maneuverStagnationTimer = 0;
+        this.maneuverCommitted = false;
     }
 
     private resetShaftClimbState() {
@@ -1884,6 +1907,7 @@ export class Brain {
             maneuverLOS: this.bestLOS > 0,
             maneuverVerticalGain: Number.isFinite(this.bestVerticalGain) ? this.bestVerticalGain : null,
             maneuverStagnation: this.maneuverStagnationTimer,
+            maneuverCommitted: this.maneuverCommitted,
             timers: {
                 progressStagnation: this.progressStagnationTimer,
                 jumpCooldown: this.jumpCooldown,
@@ -3387,6 +3411,7 @@ export class Brain {
         debugSnapshot.maneuverLOS = this.bestLOS > 0;
         debugSnapshot.maneuverVerticalGain = Number.isFinite(this.bestVerticalGain) ? this.bestVerticalGain : null;
         debugSnapshot.maneuverStagnation = this.maneuverStagnationTimer;
+        debugSnapshot.maneuverCommitted = this.maneuverCommitted;
         debugSnapshot.timers = {
             progressStagnation: this.progressStagnationTimer,
             jumpCooldown: this.jumpCooldown,
