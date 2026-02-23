@@ -385,6 +385,7 @@ export class Brain {
     progressResetCooldown: number = 0;
     targetSelectFreezeTimer: number = 0;
     loopSignatureHits: Map<string, number[]> = new Map();
+    lockFailCount: number = 0;
 
     // --- State Machine ---
     navState: 'nav-align' | 'nav-approach' | 'nav-ready' | 'nav-commit' | 'nav-recovery' = 'nav-align';
@@ -862,6 +863,7 @@ export class Brain {
             this.targetX = this.getPlatformAimX(platform, referenceX);
         }
         this.autoTargetY = null;
+        this.lockFailCount = 0;
     }
 
     private isSteerDirectionBlocked(pose: Pose, dir: -1 | 1): boolean {
@@ -1687,6 +1689,24 @@ export class Brain {
         };
         this.log.push(entry);
         if (this.log.length > MAX_LOG_ENTRIES) this.log.shift();
+
+        if (this.lockedTargetId !== null) {
+            if (event === 'PLAN_FAILURE' || event === 'GRAPH_FAIL' || event === 'seek-timeout' || event === 'stuck' || event === 'ABORT_MOVE') {
+                this.lockFailCount++;
+                if (this.lockFailCount >= 4) {
+                    this.recordLog('LOCK_GIVE_UP', pose, `fail count ${this.lockFailCount} >= 4`);
+                    this.clearTargetLock();
+                    this.targetPlatform = null;
+                    this.targetX = null;
+                    this.autoTargetY = null;
+                    this.currentState = 'idle';
+                    this.navState = 'nav-align';
+                    this.takeoffZone = null;
+                    this.patienceTimer = 0;
+                    this.resetManeuverTracking();
+                }
+            }
+        }
 
         // Dispatch significant events for telemetry
         if (event === 'PLAN_FAILURE' || event.startsWith('REROUTE')) {
@@ -2956,6 +2976,9 @@ export class Brain {
                     const touchHit = overlapX > 5 && overlapY > 5;
                     isOnTargetPlatform = groundedHit || touchHit;
                 }
+                if (isOnTargetPlatform) {
+                    this.lockFailCount = 0;
+                }
                 // Manual targets: bot center proximity, no grounded requirement
                 // Manual targets: tighter center proximity since we don't have platform boundaries.
                 const isNearManualTarget = !this.targetPlatform && targetY !== null && Math.abs(targetX - botCenterX) <= 15 && Math.abs(botCenterY - targetY) <= 15;
@@ -3571,7 +3594,7 @@ export class Brain {
     private triggerLoopHardFallback(pose: Pose, signature: string, reason: string) {
         const botCx = pose.x + pose.width / 2;
         const botFeetY = pose.y + pose.height;
-        const primeFallbackTarget = (pick: Collider, mode: 'local-random' | 'global-nearest') => {
+        const primeFallbackTarget = (pick: Collider, mode: 'local-random' | 'global-nearest' | 'local-reachable') => {
             this.lockedTargetId = pick.id;
             this.setStationaryPlatformTarget(pick, botCx, true);
             this.currentState = 'seek';
@@ -3598,14 +3621,27 @@ export class Brain {
             if (c.kind !== 'rect' || !c.flags.solid) return false;
             if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
             if (this.targetPlatform && c.id === this.targetPlatform.id) return false;
+            if (pose.grounded && pose.groundedId === c.id) return false;
             return true;
         });
 
         const idleTime = LOOP_FALLBACK_IDLE_MIN + Math.random() * (LOOP_FALLBACK_IDLE_MAX - LOOP_FALLBACK_IDLE_MIN);
         if (pool.length > 0) {
-            const pick = pool[Math.floor(Math.random() * pool.length)];
-            primeFallbackTarget(pick, 'local-random');
-            return;
+            if (pose.grounded && pose.groundedId !== null) {
+                const startId = pose.groundedId;
+                const reachablePool = pool.filter((c) =>
+                    this.findPathWithContext(startId, c.id, pose, true) !== null
+                );
+                if (reachablePool.length > 0) {
+                    const pick = reachablePool[Math.floor(Math.random() * reachablePool.length)];
+                    primeFallbackTarget(pick, 'local-reachable');
+                    return;
+                }
+            } else {
+                const pick = pool[Math.floor(Math.random() * pool.length)];
+                primeFallbackTarget(pick, 'local-random');
+                return;
+            }
         }
 
         const globalPool = this.world.getAll().filter((c) => {
@@ -3976,8 +4012,8 @@ export class Brain {
 
         const loopDetected =
             this.loopCooldown <= 0 &&
-            this.stallTimer > LOOP_DETECT_STALL &&
-            this.facingFlipCount >= LOOP_DETECT_FLIPS;
+            ((this.stallTimer > LOOP_DETECT_STALL && this.facingFlipCount >= LOOP_DETECT_FLIPS) ||
+            this.facingFlipCount > 12);
         if (loopDetected) {
             const commitWindow = this.getPingPongCommitWindow();
             const preferredCommitDir: -1 | 1 = moveDx >= 0 ? 1 : -1;
@@ -4039,7 +4075,7 @@ export class Brain {
             const w = c.aabb.x2 - c.aabb.x1;
             if (w < MIN_PLATFORM_SIZE) return false;
             // Don't target the platform we're standing on
-            if (pose.grounded && pose.x + pose.width > c.aabb.x1 - 10 && pose.x < c.aabb.x2 + 10 && Math.abs(pose.y + pose.height - c.aabb.y1) < 20) {
+            if (pose.grounded && (pose.groundedId === c.id || (pose.x + pose.width > c.aabb.x1 - 10 && pose.x < c.aabb.x2 + 10 && Math.abs(pose.y + pose.height - c.aabb.y1) < 20))) {
                 return false;
             }
 
@@ -4068,7 +4104,14 @@ export class Brain {
             return true;
         });
 
-        const pool = valid.length > 0 ? valid : candidates.filter(c => (c.aabb.x2 - c.aabb.x1) >= MIN_PLATFORM_SIZE);
+        const pool = valid.length > 0
+            ? valid
+            : candidates.filter(c => {
+                const w = c.aabb.x2 - c.aabb.x1;
+                if (w < MIN_PLATFORM_SIZE) return false;
+                if (pose.grounded && pose.groundedId === c.id) return false;
+                return true;
+            });
         if (pool.length === 0) {
             this.recordLog('NO_TARGETS', pose, `view=${candidates.length} valid=${valid.length}`);
             return;
@@ -4530,7 +4573,8 @@ export class Brain {
                     costToLock = Math.abs(cy - ty) + Math.abs(cx - tx);
                 }
 
-                const score = costToLock + distFromBot * 0.72 - altitudePotential * 0.22 + blockedPenalty + switchPenalty;
+                // Bias towards reducing distance to lock (costToLock) over just picking nearby nodes.
+                const score = costToLock * 1.5 + distFromBot * 0.5 - altitudePotential * 0.22 + blockedPenalty + switchPenalty;
                 if (score < bestScore) {
                     bestScore = score;
                     pick = c;
