@@ -387,6 +387,7 @@ export class Brain {
     targetSelectFreezeTimer: number = 0;
     loopSignatureHits: Map<string, number[]> = new Map();
     lockFailCount: number = 0;
+    lastCoordinateFallbackTime: number = 0;
     private recentUnreachable: Map<number, { targetId: number; time: number }[]> = new Map();
 
     // --- State Machine ---
@@ -718,6 +719,7 @@ export class Brain {
         this.recentTransitions = [];
         this.breadcrumbTargetPenalty.clear();
         this.loopSignatureHits.clear();
+        this.lastCoordinateFallbackTime = 0;
     }
 
     private getTargetY(): number | null {
@@ -920,8 +922,9 @@ export class Brain {
             this.clearTargetLock();
         }
 
-        // Auto mode must never chase floating coordinate targets.
-        if (this.autoTargetY !== null || this.targetX !== null) {
+        // Auto mode must never chase floating coordinate targets (unless explicit coordinate set).
+        // Only clear if we have a stale targetX but no platform and no explicit coordinate target.
+        if (this.targetPlatform === null && this.targetX !== null && this.autoTargetY === null) {
             this.targetX = null;
             this.autoTargetY = null;
             this.currentState = 'idle';
@@ -3624,6 +3627,7 @@ export class Brain {
         const primeFallbackTarget = (pick: Collider, mode: 'local-random' | 'global-nearest' | 'local-reachable' | 'local-reachable-biased') => {
             this.lockedTargetId = pick.id;
             this.setStationaryPlatformTarget(pick, botCx, true);
+            this.resetManeuverTracking();
             this.currentState = 'seek';
             this.bestProgressDist = Infinity;
             this.progressStagnationTimer = 0;
@@ -3639,6 +3643,14 @@ export class Brain {
             this.recentWarpDestinations.push(pick.id);
             if (this.recentWarpDestinations.length > 5) this.recentWarpDestinations.shift();
             this.recordLog('LOOP_FALLBACK', pose, `sig=${signature} ${reason}: ${mode} ID${pick.id}`);
+            window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
+                detail: {
+                    type: 'loop_fallback',
+                    reason,
+                    mode,
+                    targetId: pick.id
+                }
+            }));
         };
         const searchAABB: AABB = {
             x1: botCx - 420,
@@ -3694,6 +3706,15 @@ export class Brain {
         // If reachable set is empty, escalate to non-local escape strategy
         if (this.tryPickCoordinateTarget(pose, this.world.getAll(), true)) {
             this.recordLog('LOOP_FALLBACK', pose, `sig=${signature} ${reason}: escalated to non-local coord`);
+            window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
+                detail: {
+                    type: 'loop_fallback',
+                    reason,
+                    mode: 'coordinate',
+                    targetX: this.targetX,
+                    targetY: this.autoTargetY
+                }
+            }));
             return;
         }
 
@@ -3863,6 +3884,7 @@ export class Brain {
 
     private tryPickCoordinateTarget(pose: Pose, candidates: Collider[], preferFar: boolean): boolean {
         if (candidates.length === 0) return false;
+        if (performance.now() - this.lastCoordinateFallbackTime < 8000) return false;
 
         const botCx = pose.x + pose.width / 2;
         const botFeetY = pose.y + pose.height;
@@ -3935,6 +3957,10 @@ export class Brain {
             this.patienceTimer = 0;
             this.breadcrumbStack = [];
 
+            this.lastCoordinateFallbackTime = performance.now();
+            this.resetManeuverTracking();
+            this.resetShaftClimbState();
+            this.resetTicTacState();
             this.recordLog(
                 'NEW_COORD_TARGET',
                 pose,
