@@ -387,6 +387,7 @@ export class Brain {
     targetSelectFreezeTimer: number = 0;
     loopSignatureHits: Map<string, number[]> = new Map();
     lockFailCount: number = 0;
+    private recentUnreachable: Map<number, { targetId: number; time: number }[]> = new Map();
 
     // --- State Machine ---
     navState: 'nav-align' | 'nav-approach' | 'nav-ready' | 'nav-commit' | 'nav-recovery' = 'nav-align';
@@ -1256,6 +1257,28 @@ export class Brain {
             || solidDelta > WORLD_CHECKSUM_COLLIDER_TOL
             || oneWayDelta > WORLD_CHECKSUM_ONEWAY_TOL
             || hashChanged;
+    }
+
+    private markTargetUnreachable(groundedId: number, targetId: number) {
+        const now = performance.now();
+        const list = this.recentUnreachable.get(groundedId) || [];
+        list.push({ targetId, time: now });
+        // Prune old entries (5s lifetime)
+        const fresh = list.filter(e => now - e.time < 5000);
+        this.recentUnreachable.set(groundedId, fresh);
+    }
+
+    private isTargetUnreachable(groundedId: number, targetId: number): boolean {
+        const list = this.recentUnreachable.get(groundedId);
+        if (!list) return false;
+        const now = performance.now();
+        // Lazy cleanup during read
+        const fresh = list.filter(e => now - e.time < 5000);
+        if (fresh.length !== list.length) {
+            if (fresh.length === 0) this.recentUnreachable.delete(groundedId);
+            else this.recentUnreachable.set(groundedId, fresh);
+        }
+        return fresh.some(e => e.targetId === targetId);
     }
 
     private invalidatePlanForWorldDrift(pose: Pose, prev: WorldChecksum, next: WorldChecksum) {
@@ -2370,6 +2393,7 @@ export class Brain {
                                         this.takeoffZone = null;
                                         this.navState = 'nav-approach';
                                         this.patienceTimer = 0.32;
+                                        this.markTargetUnreachable(pose.groundedId, this.targetPlatform.id);
                                         this.recordLog('NAV_ALIGN_FAIL', pose, `no feasible edge ID${pose.groundedId}->ID${this.targetPlatform.id}`);
                                     }
                                 }
@@ -3622,7 +3646,7 @@ export class Brain {
             x2: botCx + 420,
             y2: botFeetY + 220
         };
-        const pool = this.world.query(searchAABB).filter((c) => {
+        let pool = this.world.query(searchAABB).filter((c) => {
             if (c.kind !== 'rect' || !c.flags.solid) return false;
             if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
             if (this.targetPlatform && c.id === this.targetPlatform.id) return false;
@@ -3630,6 +3654,18 @@ export class Brain {
             if (this.recentWarpDestinations.includes(c.id)) return false;
             return true;
         });
+
+        if (pool.length === 0) {
+            this.recordLog('LOOP_FALLBACK', pose, `strict pool empty, relaxing exclusions (allow recent warps)`);
+            pool = this.world.query(searchAABB).filter((c) => {
+                if (c.kind !== 'rect' || !c.flags.solid) return false;
+                if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
+                if (this.targetPlatform && c.id === this.targetPlatform.id) return false;
+                if (pose.grounded && pose.groundedId === c.id) return false;
+                // Allow recentWarpDestinations here as last resort
+                return true;
+            });
+        }
 
         const idleTime = LOOP_FALLBACK_IDLE_MIN + Math.random() * (LOOP_FALLBACK_IDLE_MAX - LOOP_FALLBACK_IDLE_MIN);
         if (pool.length > 0 && pose.grounded && pose.groundedId !== null) {
@@ -3806,10 +3842,22 @@ export class Brain {
         return score;
     }
 
-    private getRecentBlockedTargetIds(): Set<number> {
+    private getRecentBlockedTargetIds(currentGroundedId: number | null): Set<number> {
         const blocked = new Set<number>();
         const recent = this.recentArrivals.slice(-RECENT_TARGET_BLOCK_COUNT);
         for (const id of recent) blocked.add(id);
+
+        if (currentGroundedId !== null) {
+            const unreachable = this.recentUnreachable.get(currentGroundedId);
+            if (unreachable) {
+                const now = performance.now();
+                for (const entry of unreachable) {
+                    if (now - entry.time < 5000) {
+                        blocked.add(entry.targetId);
+                    }
+                }
+            }
+        }
         return blocked;
     }
 
@@ -4184,11 +4232,11 @@ export class Brain {
             && uniqueRecentCount <= Math.max(2, Math.floor(recentWindow.length * 0.45));
         const preferFar = repeatPressure || this.retryCount > 0 || Math.random() < 0.35;
 
-        const blockedRecent = this.getRecentBlockedTargetIds();
+        const blockedRecent = this.getRecentBlockedTargetIds(pose.groundedId);
         const recencyPool = blockedRecent.size > 0 ? pool.filter(c => !blockedRecent.has(c.id)) : pool;
         let scoringPool = recencyPool.length > 0 ? recencyPool : pool;
         if (recencyPool.length === 0 && blockedRecent.size > 0) {
-            this.recordLog('RELAX_RECENCY', pose, 'no alternative targets, allowing recent');
+            this.recordLog('RELAX_RECENCY', pose, 'no alternative targets, allowing recent/unreachable');
         }
 
         if (ENABLE_COORDINATE_TARGETS) {
@@ -4226,22 +4274,10 @@ export class Brain {
                     this.strandedTimer = 0;
                 } else {
                     this.recordLog('GRAPH_FAIL', pose, `no maneuver path from ID${startId}`);
-                    this.recordLog('GRAPH_FAIL_RELAX', pose, `using score-only candidates=${scoringPool.length}`);
+                    this.recordLog('ISLAND_CONDITION', pose, `ID${startId} has no exits (strict or relaxed). Immediate fallback.`);
 
-                    // Stranded Island Detection
-                    if (this.strandedTargetId === startId) {
-                        this.strandedTimer += 1.0;
-                    } else {
-                        this.strandedTargetId = startId;
-                        this.strandedTimer = 1.0;
-                    }
-
-                    if (this.strandedTimer >= 3.0) {
-                        this.recordLog('STRANDED_ALARM', pose, `platform ID${startId} has no exits. Escalating.`);
-                        this.triggerLoopHardFallback(pose, `island-ID${startId}`, 'stranded-island');
-                        this.strandedTimer = 0;
-                        return; // Abort target selection, fallback will handle it
-                    }
+                    this.triggerLoopHardFallback(pose, `island-ID${startId}`, 'island-trap');
+                    return; // Abort target selection
                 }
             }
         }
@@ -4341,7 +4377,6 @@ export class Brain {
         this.bestProgressDist = Infinity;
         this.progressStagnationTimer = 0;
         this.fsmStagnationTimer = 0;
-        this.retryCount = 0;
         this.approachPhase = 'direct';
         this.approachX = null;
         this.seekDiagTimer = 0;
@@ -4576,7 +4611,7 @@ export class Brain {
             if (this.targetPlatform && c.id === this.targetPlatform.id && (!locked || c.id !== locked.id)) return false;
             return (c.aabb.x2 - c.aabb.x1) >= MIN_PLATFORM_SIZE && c.aabb.y1 < pose.y + pose.height && c.aabb.y1 > ty - 30;
         });
-        const blockedRecent = this.getRecentBlockedTargetIds();
+        const blockedRecent = this.getRecentBlockedTargetIds(pose.groundedId);
         const reroutePool = blockedRecent.size > 0
             ? nearby.filter(c => !blockedRecent.has(c.id))
             : nearby;
