@@ -1697,9 +1697,21 @@ export class Brain {
         }
     }
 
-    getLogText(): string {
-        if (this.log.length === 0) return 'No events recorded yet.';
-        const lines = this.log.map(e => {
+    getLogText(errorsOnly: boolean = false): string {
+        const ERRORS = [
+            'PLAN_FAILURE', 'ABORT_MOVE', 'GIVE_UP_ABORT', 'MANUAL_GIVE_UP',
+            'CEILING_LOOP', 'GLITCH_LOOP', 'LOOP_FALLBACK', 'TIC_TAC_STALL',
+            'EDGE_DROP_FAIL', 'NAV_APPROACH_FAIL', 'JUMP_BLOCKED', 'CEILING_BONK',
+            'OFFSCREEN_RESET', 'MANEUVER_INVALIDATE', 'BREADCRUMB_POP'
+        ];
+
+        const filtered = errorsOnly
+            ? this.log.filter(e => ERRORS.some(err => e.event.includes(err)) || e.event.includes('FAIL') || e.event.includes('LOOP'))
+            : this.log;
+
+        if (filtered.length === 0) return errorsOnly ? 'No error events recorded.' : 'No events recorded yet.';
+
+        const lines = filtered.map(e => {
             const pos = `bot(${e.botX},${e.botY})`;
             const vel = `v(${e.botVx},${e.botVy})`;
             const tgt = e.targetId !== null
@@ -1715,9 +1727,21 @@ export class Brain {
                 : 'air';
             const retry = e.retry > 0 ? `retry:${e.retry}` : '';
             const detail = e.detail ? `| ${e.detail}` : '';
-            return `${e.time} ${e.event.padEnd(14)} ${state.padEnd(16)} ${pos.padEnd(16)} ${vel.padEnd(14)} ${tgt.padEnd(24)} ${lock.padEnd(9)} ${delta.padEnd(12)} ${e.phase.padEnd(7)} ${support.padEnd(6)} t:${e.timer}s ${retry} ${detail}`;
+            return `${e.time} ${e.event.padEnd(18)} ${state.padEnd(16)} ${pos.padEnd(16)} ${vel.padEnd(14)} ${tgt.padEnd(24)} ${lock.padEnd(9)} ${delta.padEnd(12)} ${e.phase.padEnd(7)} ${support.padEnd(6)} t:${e.timer}s ${retry} ${detail}`;
         });
         return lines.join('\n');
+    }
+
+    getRawLog(errorsOnly: boolean = false): BrainLogEntry[] {
+        const ERRORS = [
+            'PLAN_FAILURE', 'ABORT_MOVE', 'GIVE_UP_ABORT', 'MANUAL_GIVE_UP',
+            'CEILING_LOOP', 'GLITCH_LOOP', 'LOOP_FALLBACK', 'TIC_TAC_STALL',
+            'EDGE_DROP_FAIL', 'NAV_APPROACH_FAIL', 'JUMP_BLOCKED', 'CEILING_BONK',
+            'OFFSCREEN_RESET', 'MANEUVER_INVALIDATE', 'BREADCRUMB_POP'
+        ];
+        return errorsOnly
+            ? this.log.filter(e => ERRORS.some(err => e.event.includes(err)) || e.event.includes('FAIL') || e.event.includes('LOOP'))
+            : this.log;
     }
 
 
@@ -2227,7 +2251,7 @@ export class Brain {
                         this.targetX = wpCx;
                         this.bestProgressDist = Infinity;
                         this.progressStagnationTimer = 0;
-            this.fsmStagnationTimer = 0;
+                        this.fsmStagnationTimer = 0;
                         this.approachPhase = 'direct';
                         this.approachX = null;
                         return this.think(pose, 0);
@@ -2705,7 +2729,7 @@ export class Brain {
                     let moveDir: -1 | 0 | 1 = 0;
                     const commitActive = this.moveCommitDir !== 0 && this.moveCommitTimer > 0;
                     const commitBlocked = commitActive
-                        ? this.isSteerDirectionBlocked(pose, this.moveCommitDir)
+                        ? this.isSteerDirectionBlocked(pose, this.moveCommitDir as -1 | 1)
                         : false;
                     if (shouldMoveHorizontally) {
                         if (commitActive && !commitBlocked) {
@@ -2979,7 +3003,7 @@ export class Brain {
                             this.recordLog('RESUME_LOCK', pose, `waypoint ID${arrivedId} -> final ID${lockId}`);
                             this.waypointStickyUntil = 0;
                             this.waypointOriginId = null;
-                        this.fsmStagnationTimer = 0;
+                            this.fsmStagnationTimer = 0;
                         } else {
                             // Locked target disappeared (DOM changed). Fall back cleanly.
                             this.recordLog('GIVE_UP_LOCK', pose, `locked target missing after waypoint ID${arrivedId}`);
@@ -2988,7 +3012,7 @@ export class Brain {
                             this.currentState = 'idle';
                             this.bestProgressDist = Infinity;
                             this.progressStagnationTimer = 0;
-                        this.fsmStagnationTimer = 0;
+                            this.fsmStagnationTimer = 0;
                             this.targetPlatform = null;
                             this.targetX = null;
                             this.autoTargetY = null;
@@ -3042,7 +3066,7 @@ export class Brain {
                             }
                             this.bestProgressDist = Infinity;
                             this.progressStagnationTimer = 0;
-                        this.fsmStagnationTimer = 0;
+                            this.fsmStagnationTimer = 0;
                             this.attemptBreadcrumbRecovery(pose, 'fell-below-target');
                         }
                     }
@@ -3259,119 +3283,119 @@ export class Brain {
                     this.downSealRerouteTimer = DOWN_SEAL_REROUTE_COOLDOWN;
                 }
             } else {
-            const edgePad = 6;
-            const leftEdge = groundedCollider.aabb.x1 + edgePad;
-            const rightEdge = groundedCollider.aabb.x2 - edgePad;
+                const edgePad = 6;
+                const leftEdge = groundedCollider.aabb.x1 + edgePad;
+                const rightEdge = groundedCollider.aabb.x2 - edgePad;
 
-            const hasWallAtEdge = (edgeX: number, dir: -1 | 1) => {
-                const probe = {
-                    x1: dir > 0 ? edgeX : edgeX - 18,
-                    y1: pose.y + 8,
-                    x2: dir > 0 ? edgeX + 18 : edgeX,
-                    y2: pose.y + pose.height - 8
+                const hasWallAtEdge = (edgeX: number, dir: -1 | 1) => {
+                    const probe = {
+                        x1: dir > 0 ? edgeX : edgeX - 18,
+                        y1: pose.y + 8,
+                        x2: dir > 0 ? edgeX + 18 : edgeX,
+                        y2: pose.y + pose.height - 8
+                    };
+                    return this.world.query(probe).some(c => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay && c.id !== groundedCollider.id);
                 };
-                return this.world.query(probe).some(c => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay && c.id !== groundedCollider.id);
-            };
 
-            const leftBlocked = hasWallAtEdge(leftEdge, -1);
-            const rightBlocked = hasWallAtEdge(rightEdge, 1);
-            const leftScore = Math.abs(targetX - leftEdge) + (leftBlocked ? 1000 : 0);
-            const rightScore = Math.abs(targetX - rightEdge) + (rightBlocked ? 1000 : 0);
+                const leftBlocked = hasWallAtEdge(leftEdge, -1);
+                const rightBlocked = hasWallAtEdge(rightEdge, 1);
+                const leftScore = Math.abs(targetX - leftEdge) + (leftBlocked ? 1000 : 0);
+                const rightScore = Math.abs(targetX - rightEdge) + (rightBlocked ? 1000 : 0);
 
-            const desiredEdge = rightScore <= leftScore ? rightEdge : leftEdge;
-            const sameGround = this.dropGroundId === groundedCollider.id;
-            const shouldReuseDropPlan = sameGround && this.dropEdgeX !== null && this.dropLockTimer > 0;
-            const chosenEdge = shouldReuseDropPlan ? this.dropEdgeX! : desiredEdge;
-            const dropRight = Math.abs(chosenEdge - rightEdge) <= Math.abs(chosenEdge - leftEdge);
-            const dropBlocked = dropRight ? rightBlocked : leftBlocked;
+                const desiredEdge = rightScore <= leftScore ? rightEdge : leftEdge;
+                const sameGround = this.dropGroundId === groundedCollider.id;
+                const shouldReuseDropPlan = sameGround && this.dropEdgeX !== null && this.dropLockTimer > 0;
+                const chosenEdge = shouldReuseDropPlan ? this.dropEdgeX! : desiredEdge;
+                const dropRight = Math.abs(chosenEdge - rightEdge) <= Math.abs(chosenEdge - leftEdge);
+                const dropBlocked = dropRight ? rightBlocked : leftBlocked;
 
-            if (!shouldReuseDropPlan) {
-                this.dropEdgeX = chosenEdge;
-                this.dropGroundId = groundedCollider.id;
-                this.dropLockTimer = 2.5; // Increased stickiness to ensure we reach the edge
-                this.recordLog(
-                    'EDGE_DROP_PLAN',
-                    pose,
-                    `ground=ID${groundedCollider.id} edge=${Math.round(chosenEdge)} blocked=${dropBlocked ? 'y' : 'n'} targetDx=${Math.round(targetX - botCenterX)}`
-                );
-            }
-
-            const dropDir: -1 | 1 = dropRight ? 1 : -1;
-            const dropExitX = chosenEdge + dropDir * (pose.width * 0.75 + 4);
-            const distFromEdge = Math.abs(chosenEdge - botCenterX);
-            const atEdge = distFromEdge < 26;
-
-            debugSnapshot.dropPlannedEdgeX = chosenEdge;
-            debugSnapshot.dropDirection = dropDir;
-
-            // Intent-stuck: we reached the drop edge and intend to fall, but downward motion never starts.
-            // In this physics model, downward velocity is +vy.
-            const intendsDrop = atEdge && !dropBlocked;
-            if (intendsDrop) {
-                const sameIntent =
-                    this.dropIntentGroundId === groundedCollider.id
-                    && this.dropIntentEdgeX !== null
-                    && Math.abs(this.dropIntentEdgeX - chosenEdge) < 2;
-                if (!sameIntent) {
-                    this.dropIntentGroundId = groundedCollider.id;
-                    this.dropIntentEdgeX = chosenEdge;
-                    this.dropIntentStuckTimer = 0;
-                }
-
-                const startedFalling = !pose.grounded || pose.vy >= EDGE_DROP_INTENT_FALL_VY;
-                if (startedFalling) {
-                    this.resetDropIntentTracking();
-                } else {
-                    this.dropIntentStuckTimer += dt;
-                }
-
-                if (!startedFalling && this.dropIntentStuckTimer > EDGE_DROP_INTENT_STUCK_WINDOW) {
+                if (!shouldReuseDropPlan) {
+                    this.dropEdgeX = chosenEdge;
+                    this.dropGroundId = groundedCollider.id;
+                    this.dropLockTimer = 2.5; // Increased stickiness to ensure we reach the edge
                     this.recordLog(
-                        'EDGE_DROP_INTENT_STUCK',
+                        'EDGE_DROP_PLAN',
                         pose,
-                        `ground=ID${groundedCollider.id} vy=${Math.round(pose.vy)} t=${this.dropIntentStuckTimer.toFixed(2)}`
+                        `ground=ID${groundedCollider.id} edge=${Math.round(chosenEdge)} blocked=${dropBlocked ? 'y' : 'n'} targetDx=${Math.round(targetX - botCenterX)}`
                     );
-                    if (this.targetPlatform) {
-                        this.graph.invalidateEdge(groundedCollider.id, this.targetPlatform.id, 'edge-drop-intent-stuck', 6000);
+                }
+
+                const dropDir: -1 | 1 = dropRight ? 1 : -1;
+                const dropExitX = chosenEdge + dropDir * (pose.width * 0.75 + 4);
+                const distFromEdge = Math.abs(chosenEdge - botCenterX);
+                const atEdge = distFromEdge < 26;
+
+                debugSnapshot.dropPlannedEdgeX = chosenEdge;
+                debugSnapshot.dropDirection = dropDir;
+
+                // Intent-stuck: we reached the drop edge and intend to fall, but downward motion never starts.
+                // In this physics model, downward velocity is +vy.
+                const intendsDrop = atEdge && !dropBlocked;
+                if (intendsDrop) {
+                    const sameIntent =
+                        this.dropIntentGroundId === groundedCollider.id
+                        && this.dropIntentEdgeX !== null
+                        && Math.abs(this.dropIntentEdgeX - chosenEdge) < 2;
+                    if (!sameIntent) {
+                        this.dropIntentGroundId = groundedCollider.id;
+                        this.dropIntentEdgeX = chosenEdge;
+                        this.dropIntentStuckTimer = 0;
                     }
-                    this.invalidateActiveManeuver(pose, 'edge-drop-intent-stuck', 6000);
-                    this.resetManeuverTracking();
-                    this.dropEdgeX = null;
-                    this.dropGroundId = null;
-                    this.dropLockTimer = 0;
+
+                    const startedFalling = !pose.grounded || pose.vy >= EDGE_DROP_INTENT_FALL_VY;
+                    if (startedFalling) {
+                        this.resetDropIntentTracking();
+                    } else {
+                        this.dropIntentStuckTimer += dt;
+                    }
+
+                    if (!startedFalling && this.dropIntentStuckTimer > EDGE_DROP_INTENT_STUCK_WINDOW) {
+                        this.recordLog(
+                            'EDGE_DROP_INTENT_STUCK',
+                            pose,
+                            `ground=ID${groundedCollider.id} vy=${Math.round(pose.vy)} t=${this.dropIntentStuckTimer.toFixed(2)}`
+                        );
+                        if (this.targetPlatform) {
+                            this.graph.invalidateEdge(groundedCollider.id, this.targetPlatform.id, 'edge-drop-intent-stuck', 6000);
+                        }
+                        this.invalidateActiveManeuver(pose, 'edge-drop-intent-stuck', 6000);
+                        this.resetManeuverTracking();
+                        this.dropEdgeX = null;
+                        this.dropGroundId = null;
+                        this.dropLockTimer = 0;
+                        this.resetDropIntentTracking();
+                        this.reroute(pose, 'edge-drop-intent-stuck');
+                    }
+                } else {
                     this.resetDropIntentTracking();
-                    this.reroute(pose, 'edge-drop-intent-stuck');
-                }
-            } else {
-                this.resetDropIntentTracking();
-            }
-
-            // Breakout logic for walled edges
-            if (atEdge && dropBlocked) {
-                if (this.progressStagnationTimer > 1.2 && this.wallDecisionTimer <= 0) {
-                    requestJump(null, 'edge-drop-wall-hop');
-                    this.wallDecisionTimer = WALL_DECISION_COOLDOWN;
                 }
 
-                // If persistently blocked even after jump attempts, invalidate the edge/target.
-                if (this.progressStagnationTimer > 2.5) {
-                    this.recordLog('EDGE_DROP_FAIL', pose, `blocked by wall at edge ID${groundedCollider.id}`);
-                    if (this.targetPlatform) {
-                        this.graph.invalidateEdge(groundedCollider.id, this.targetPlatform.id, 'edge-drop-blocked', 5000);
+                // Breakout logic for walled edges
+                if (atEdge && dropBlocked) {
+                    if (this.progressStagnationTimer > 1.2 && this.wallDecisionTimer <= 0) {
+                        requestJump(null, 'edge-drop-wall-hop');
+                        this.wallDecisionTimer = WALL_DECISION_COOLDOWN;
                     }
-                    this.invalidateActiveManeuver(pose, 'edge-drop-blocked');
-                    this.resetManeuverTracking(); // Force re-evaluation
+
+                    // If persistently blocked even after jump attempts, invalidate the edge/target.
+                    if (this.progressStagnationTimer > 2.5) {
+                        this.recordLog('EDGE_DROP_FAIL', pose, `blocked by wall at edge ID${groundedCollider.id}`);
+                        if (this.targetPlatform) {
+                            this.graph.invalidateEdge(groundedCollider.id, this.targetPlatform.id, 'edge-drop-blocked', 5000);
+                        }
+                        this.invalidateActiveManeuver(pose, 'edge-drop-blocked');
+                        this.resetManeuverTracking(); // Force re-evaluation
+                    }
                 }
-            }
 
-            // Horizontal Steering
-            input.right = dropDir > 0;
-            input.left = dropDir < 0;
+                // Horizontal Steering
+                input.right = dropDir > 0;
+                input.left = dropDir < 0;
 
-            // Keep crouch only when we explicitly detected a low-clearance horizontal path.
-            if (!crouchClearancePath) {
-                input.down = false;
-            }
+                // Keep crouch only when we explicitly detected a low-clearance horizontal path.
+                if (!crouchClearancePath) {
+                    input.down = false;
+                }
             }
         } else if (!pose.grounded || !groundedCollider || groundedCollider.flags.oneWay) {
             this.dropEdgeX = null;

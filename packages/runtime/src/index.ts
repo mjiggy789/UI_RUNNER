@@ -58,6 +58,9 @@ class Runtime {
     targetYAnchor: number | null = null;
     realWebsiteMode: boolean = false;
     realWebsiteEl: HTMLElement | null = null;
+    logOpen: boolean = false;
+    logEl: HTMLElement | null = null;
+    logErrorsOnly: boolean = true;
 
     constructor(config: RuntimeOptions) {
         this.config = config;
@@ -96,6 +99,9 @@ class Runtime {
             }
             if (key === 's') {
                 this.toggleSettings();
+            }
+            if (key === 'l') {
+                this.toggleLogs();
             }
             if (key === 'r') {
                 this.respawnBot();
@@ -402,6 +408,210 @@ class Runtime {
     private hideSettings() {
         if (this.settingsEl) {
             this.settingsEl.style.display = 'none';
+        }
+    }
+
+    private toggleLogs() {
+        this.logOpen = !this.logOpen;
+        if (this.logOpen) {
+            this.showLogs();
+        } else {
+            this.hideLogs();
+        }
+    }
+
+    private showLogs() {
+        if (this.logEl) {
+            this.logEl.style.display = 'flex';
+            this.updateLogs();
+            return;
+        }
+
+        // Inject styles
+        if (!document.getElementById('pkb-log-styles')) {
+            const style = document.createElement('style');
+            style.id = 'pkb-log-styles';
+            style.textContent = `
+                #pkb-log-overlay {
+                    position: fixed;
+                    inset: 0;
+                    background: rgba(0, 0, 0, 0.4);
+                    backdrop-filter: blur(2px);
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    z-index: 1000000;
+                    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+                }
+                #pkb-log-panel {
+                    background: rgba(15, 23, 42, 0.95);
+                    border: 1px solid rgba(56, 189, 248, 0.4);
+                    border-radius: 12px;
+                    padding: 24px;
+                    width: 95vw;
+                    height: 85vh;
+                    max-width: 1400px;
+                    display: flex;
+                    flex-direction: column;
+                    color: #cbd5e1;
+                    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+                }
+                #pkb-log-header {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    margin-bottom: 16px;
+                }
+                #pkb-log-header h2 {
+                    margin: 0;
+                    font-size: 18px;
+                    color: #38bdf8;
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                }
+                .pkb-log-controls {
+                    display: flex;
+                    gap: 12px;
+                }
+                #pkb-log-body {
+                    flex: 1;
+                    overflow: auto;
+                    background: rgba(2, 6, 23, 0.5);
+                    border: 1px solid rgba(30, 41, 59, 0.8);
+                    border-radius: 6px;
+                    padding: 12px;
+                    margin: 0;
+                    font-size: 12px;
+                    line-height: 1.5;
+                    white-space: pre;
+                    color: #94a3b8;
+                }
+                .pkb-log-btn {
+                    padding: 6px 12px;
+                    background: #334155;
+                    border: 1px solid #475569;
+                    border-radius: 6px;
+                    color: #f1f5f9;
+                    font-size: 12px;
+                    cursor: pointer;
+                    transition: all 0.15s;
+                }
+                .pkb-log-btn:hover {
+                    background: #475569;
+                    border-color: #38bdf8;
+                }
+                #pkb-log-close-btn {
+                    background: #38bdf8;
+                    color: #0f172a;
+                    border-color: #0ea5e9;
+                    font-weight: 600;
+                }
+                #pkb-log-close-btn:hover {
+                    background: #7dd3fc;
+                }
+            `;
+            document.head.appendChild(style);
+        }
+
+        const overlay = document.createElement('div');
+        overlay.id = 'pkb-log-overlay';
+        overlay.setAttribute('data-bot-ignore', '');
+        overlay.innerHTML = `
+            <div id="pkb-log-panel">
+                <div id="pkb-log-header">
+                    <h2>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                        Brain Event Log
+                    </h2>
+                    <div class="pkb-log-controls">
+                        <button class="pkb-log-btn" id="pkb-log-toggle-mode-btn">Show All Events</button>
+                        <button class="pkb-log-btn" id="pkb-log-copy-btn">Copy to Clipboard</button>
+                        <button class="pkb-log-btn" id="pkb-log-export-btn">Export JSON</button>
+                        <button class="pkb-log-btn" id="pkb-log-clear-btn">Clear Log</button>
+                        <button class="pkb-log-btn" id="pkb-log-close-btn">Close [L]</button>
+                    </div>
+                </div>
+                <pre id="pkb-log-body"></pre>
+            </div>
+        `;
+
+        document.body.appendChild(overlay);
+        this.logEl = overlay;
+
+        // Toggle mode button
+        const toggleBtn = document.getElementById('pkb-log-toggle-mode-btn');
+        toggleBtn?.addEventListener('click', () => {
+            this.logErrorsOnly = !this.logErrorsOnly;
+            if (toggleBtn) toggleBtn.textContent = this.logErrorsOnly ? 'Show All Events' : 'Show Errors Only';
+            this.updateLogs();
+        });
+
+        // Copy button
+        document.getElementById('pkb-log-copy-btn')?.addEventListener('click', () => {
+            const text = this.brain.getLogText(this.logErrorsOnly);
+            navigator.clipboard.writeText(text).then(() => {
+                const btn = document.getElementById('pkb-log-copy-btn');
+                if (btn) {
+                    const oldText = btn.textContent;
+                    btn.textContent = 'Copied!';
+                    btn.style.borderColor = '#22c55e';
+                    setTimeout(() => {
+                        if (btn) {
+                            btn.textContent = oldText;
+                            btn.style.borderColor = '';
+                        }
+                    }, 2000);
+                }
+            });
+        });
+
+        // Export button
+        document.getElementById('pkb-log-export-btn')?.addEventListener('click', () => {
+            const data = this.brain.getRawLog(this.logErrorsOnly);
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `pkb-log-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+
+        // Close button
+        document.getElementById('pkb-log-close-btn')?.addEventListener('click', () => {
+            this.toggleLogs();
+        });
+
+        // Clear button
+        document.getElementById('pkb-log-clear-btn')?.addEventListener('click', () => {
+            this.brain.log = [];
+            this.updateLogs();
+        });
+
+        // Click outside to close
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) {
+                this.toggleLogs();
+            }
+        });
+
+        this.updateLogs();
+    }
+
+    private hideLogs() {
+        if (this.logEl) {
+            this.logEl.style.display = 'none';
+        }
+    }
+
+    private updateLogs() {
+        if (!this.logOpen || !this.logEl) return;
+        const body = document.getElementById('pkb-log-body');
+        if (body) {
+            body.textContent = this.brain.getLogText(this.logErrorsOnly);
+            // Auto scroll to bottom
+            body.scrollTop = body.scrollHeight;
         }
     }
 
@@ -1009,6 +1219,10 @@ class Runtime {
                     if (canvas) this.renderer = new Renderer(canvas, this.config.theme);
                 }
                 this.renderer.draw(this.controller, colliders, this.debugMode, this.visualizationSettings);
+
+                if (this.logOpen) {
+                    this.updateLogs();
+                }
             } else {
                 // If disabled, just clear canvas or don't draw
                 this.renderer.ctx?.clearRect(0, 0, this.renderer.canvas.width, this.renderer.canvas.height);
