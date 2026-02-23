@@ -191,7 +191,7 @@ export class NavGraph {
         }
     }
 
-    private buildManeuverEdge(from: Collider, to: Collider, landingPenalty: number): NavEdge | null {
+    public buildManeuverEdge(from: Collider, to: Collider, landingPenalty: number): NavEdge | null {
         const fromCenterX = (from.aabb.x1 + from.aabb.x2) / 2;
         const toCenterX = (to.aabb.x1 + to.aabb.x2) / 2;
         const dy = from.aabb.y1 - to.aabb.y1; // positive => target higher
@@ -263,7 +263,7 @@ export class NavGraph {
         };
     }
 
-    private findManeuverBands(from: Collider, to: Collider): BandResult | null {
+    public findManeuverBands(from: Collider, to: Collider): BandResult | null {
         const fromMinX = from.aabb.x1 + TAKEOFF_PAD;
         const fromMaxX = from.aabb.x2 - TAKEOFF_PAD;
         const landingMin = to.aabb.x1 + LANDING_PAD;
@@ -447,13 +447,13 @@ export class NavGraph {
         return true;
     }
 
-    private isWallish(c: Collider): boolean {
+    public isWallish(c: Collider): boolean {
         const width = c.aabb.x2 - c.aabb.x1;
         const height = c.aabb.y2 - c.aabb.y1;
         return !c.flags.oneWay && width <= WALLISH_WIDTH && height >= WALLISH_MIN_HEIGHT;
     }
 
-    private getLandingPenalty(c: Collider): number {
+    public getLandingPenalty(c: Collider): number {
         const width = c.aabb.x2 - c.aabb.x1;
         const height = c.aabb.y2 - c.aabb.y1;
         const aspect = height / Math.max(width, 1);

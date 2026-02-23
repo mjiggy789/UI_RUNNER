@@ -1,5 +1,6 @@
 import { Pose } from './controller';
 import { World } from './world';
+import { LocalSolver } from './local-solver';
 import type { WorldChecksum } from './world-checksum';
 import { NavGraph, NavEdge, PlannerContext, NavPathResult } from './planner';
 import { Collider, AABB } from '@parkour-bot/shared';
@@ -388,6 +389,7 @@ export class Brain {
     loopSignatureHits: Map<string, number[]> = new Map();
     lockFailCount: number = 0;
     lastCoordinateFallbackTime: number = 0;
+    localSolver: LocalSolver;
     private recentUnreachable: Map<number, { targetId: number; time: number }[]> = new Map();
 
     // --- State Machine ---
@@ -485,6 +487,7 @@ export class Brain {
     constructor(world: World) {
         this.world = world;
         this.graph = new NavGraph(world);
+        this.localSolver = new LocalSolver(world, this.graph);
         this.worldRevisionSeen = world.getRevision();
         this.worldChecksumSeen = world.getChecksum();
         this.resetWorldChecksumDriftTracking();
@@ -2393,11 +2396,22 @@ export class Brain {
                                         this.patienceTimer = 0.24;
                                         this.recordLog('NAV_ALIGN', pose, `fallback tz=[${Math.round(tz.minX)},${Math.round(tz.maxX)}]`);
                                     } else {
-                                        this.takeoffZone = null;
-                                        this.navState = 'nav-approach';
-                                        this.patienceTimer = 0.32;
-                                        this.markTargetUnreachable(pose.groundedId, this.targetPlatform.id);
-                                        this.recordLog('NAV_ALIGN_FAIL', pose, `no feasible edge ID${pose.groundedId}->ID${this.targetPlatform.id}`);
+                                        const localEdge = this.localSolver.solve(
+                                            pose,
+                                            { x: targetX!, y: targetY! },
+                                            this.getPlannerContext(pose)
+                                        );
+
+                                        if (localEdge) {
+                                            this.recordLog('LOCAL_SOLVE', pose, `align-fail rescue -> ID${localEdge.toId}`);
+                                            this.executeLocalManeuver(pose, localEdge);
+                                        } else {
+                                            this.takeoffZone = null;
+                                            this.navState = 'nav-approach';
+                                            this.patienceTimer = 0.32;
+                                            this.markTargetUnreachable(pose.groundedId, this.targetPlatform.id);
+                                            this.recordLog('NAV_ALIGN_FAIL', pose, `no feasible edge ID${pose.groundedId}->ID${this.targetPlatform.id}`);
+                                        }
                                     }
                                 }
                             }
@@ -4131,6 +4145,23 @@ export class Brain {
                 pose,
                 `flip=${this.facingFlipCount} stall=${this.stallTimer.toFixed(2)} dx=${Math.round(moveDx)} h=${Math.round(heightDiff)} phase=${this.approachPhase}`
             );
+
+            // Try local solve
+            const targetPos = (this.targetX !== null && this.autoTargetY !== null)
+                ? { x: this.targetX, y: this.autoTargetY }
+                : (this.targetPlatform ? { x: (this.targetPlatform.aabb.x1 + this.targetPlatform.aabb.x2) / 2, y: this.targetPlatform.aabb.y1 } : null);
+
+            const localEdge = this.localSolver.solve(pose, targetPos, this.getPlannerContext(pose));
+            if (localEdge) {
+                this.recordLog('LOCAL_SOLVE', pose, `loop rescue -> ID${localEdge.toId}`);
+                this.executeLocalManeuver(pose, localEdge);
+                this.loopCooldown = LOOP_RECOVERY_COOLDOWN;
+                this.stallTimer = 0;
+                this.facingFlipCount = 0;
+                this.loopWarned = false;
+                return true;
+            }
+
             window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
                 detail: {
                     type: 'glitch_loop',
@@ -4300,6 +4331,20 @@ export class Brain {
                     this.strandedTimer = 0;
                 } else {
                     this.recordLog('GRAPH_FAIL', pose, `no maneuver path from ID${startId}`);
+
+                    // Attempt Local Solve
+                    const localEdge = this.localSolver.solve(
+                        pose,
+                        this.targetPlatform ? { x: (this.targetPlatform.aabb.x1 + this.targetPlatform.aabb.x2) / 2, y: this.targetPlatform.aabb.y1 } : null,
+                        this.getPlannerContext(pose)
+                    );
+
+                    if (localEdge) {
+                        this.recordLog('LOCAL_SOLVE', pose, `synthesized escape ID${localEdge.toId} ${localEdge.action}`);
+                        this.executeLocalManeuver(pose, localEdge);
+                        return;
+                    }
+
                     this.recordLog('ISLAND_CONDITION', pose, `ID${startId} has no exits (strict or relaxed). Immediate fallback.`);
 
                     this.triggerLoopHardFallback(pose, `island-ID${startId}`, 'island-trap');
@@ -4947,6 +4992,43 @@ export class Brain {
         }
         this.waypointStickyUntil = 0;
         this.waypointOriginId = null;
+    }
+
+    private executeLocalManeuver(pose: Pose, edge: NavEdge) {
+        if (pose.groundedId === null) return;
+
+        // 1. Inject into graph so Planner can see it
+        const node = this.graph.nodes.get(pose.groundedId);
+        if (node) {
+            const existingIdx = node.edges.findIndex((e) => e.maneuverId === edge.maneuverId);
+            if (existingIdx >= 0) {
+                node.edges[existingIdx] = edge;
+            } else {
+                node.edges.push(edge);
+            }
+        }
+
+        // 2. Switch target
+        const targetCollider = this.world.colliders.get(edge.toId);
+        if (targetCollider) {
+            this.setStationaryPlatformTarget(targetCollider, (edge.landingMinX + edge.landingMaxX) / 2, true);
+            this.currentState = 'seek';
+            this.navState = 'nav-align';
+
+            // 3. Force the maneuver active immediately to prevent frame-perfect glitches
+            this.setActiveManeuver(edge, pose.groundedId, pose);
+
+            // 4. Reset stagnation timers so we don't abort immediately
+            this.progressStagnationTimer = 0;
+            this.fsmStagnationTimer = 0;
+
+            window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
+                detail: {
+                    type: 'local_solve',
+                    edge: edge.maneuverId
+                }
+            }));
+        }
     }
 
     private calculateTakeoffZone(pose: Pose, currentFloor: Collider, targetFloor: Collider, heightDiff: number): { minX: number, maxX: number, facing: 1 | -1 } | null {
