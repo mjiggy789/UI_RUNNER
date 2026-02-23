@@ -1,0 +1,1192 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Parkour Sandbox</title>
+    <style>
+        :root {
+            --bg-0: #071426;
+            --bg-1: #0c2240;
+            --line: #37577d;
+            --plate-0: #233956;
+            --plate-1: #1a2d46;
+            --accent: #39d6ff;
+            --oneway: #2f88b8;
+            --goal: #229768;
+            --wall: #3d5274;
+            --danger: #9b3f5a;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            user-select: none;
+            font-family: "Avenir Next", "Segoe UI", sans-serif;
+            background:
+                radial-gradient(980px 560px at 12% 8%, rgba(57, 214, 255, 0.08), transparent 68%),
+                radial-gradient(760px 420px at 86% 14%, rgba(34, 151, 104, 0.09), transparent 66%),
+                linear-gradient(180deg, var(--bg-1), var(--bg-0));
+        }
+
+        #game-stage {
+            position: relative;
+            width: 100vw;
+            height: calc(100vh - 60px);
+            margin-top: 60px;
+            background-image:
+                linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+            background-size: 44px 44px;
+            cursor: crosshair;
+        }
+
+        #game-stage.select-mode {
+            cursor: default;
+        }
+
+        h1 {
+            position: absolute;
+            top: 16px;
+            left: 20px;
+            margin: 0;
+            color: var(--accent);
+            font-size: clamp(20px, 2.2vw, 34px);
+            text-shadow: 0 0 14px rgba(57, 214, 255, 0.28);
+            letter-spacing: 0.01em;
+            pointer-events: none;
+        }
+
+        .hint {
+            position: absolute;
+            top: 22px;
+            right: 22px;
+            color: #6e89ac;
+            font-size: clamp(10px, 0.72vw, 12px);
+            pointer-events: none;
+            text-align: right;
+            line-height: 1.35;
+        }
+
+        .obstacle {
+            position: absolute;
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            background: linear-gradient(180deg, var(--plate-0), var(--plate-1));
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.24);
+            font-size: 0;
+            color: transparent;
+            touch-action: none;
+        }
+
+        .obstacle.oneway {
+            background: linear-gradient(180deg, rgba(47, 136, 184, 0.96), rgba(27, 96, 134, 0.96));
+            border-color: #55bced;
+        }
+
+        .obstacle.wall {
+            background: linear-gradient(180deg, rgba(61, 82, 116, 0.96), rgba(44, 62, 92, 0.96));
+            border-color: #6f8eb6;
+        }
+
+        .obstacle.goal {
+            background: linear-gradient(180deg, rgba(34, 151, 104, 0.95), rgba(26, 117, 81, 0.95));
+            border-color: #50e3ae;
+        }
+
+        .obstacle.danger {
+            border-color: #d56874;
+            background: linear-gradient(180deg, rgba(95, 52, 76, 0.96), rgba(58, 33, 49, 0.96));
+        }
+
+        .obstacle.selected {
+            outline: 2px solid #f8d34a;
+            outline-offset: 2px;
+            box-shadow: 0 0 0 2px rgba(248, 211, 74, 0.25), 0 8px 20px rgba(0, 0, 0, 0.24);
+        }
+
+        .resize-handle {
+            position: absolute;
+            width: 12px;
+            height: 12px;
+            right: -6px;
+            bottom: -6px;
+            border-radius: 2px;
+            background: #f8d34a;
+            border: 1px solid #433500;
+            cursor: nwse-resize;
+            display: none;
+            z-index: 2;
+        }
+
+        .obstacle.selected .resize-handle {
+            display: block;
+        }
+
+        #draw-ghost {
+            position: absolute;
+            pointer-events: none;
+            border: 1px dashed #80d8ff;
+            background: rgba(80, 196, 255, 0.15);
+            border-radius: 4px;
+            display: none;
+            z-index: 1;
+        }
+
+        #sandbox-panel {
+            position: fixed;
+            top: 134px;
+            left: 16px;
+            z-index: 1000;
+            width: 280px;
+            background: rgba(5, 16, 32, 0.9);
+            border: 1px solid #2a4b72;
+            border-radius: 10px;
+            box-shadow: 0 14px 34px rgba(0, 0, 0, 0.35);
+            padding: 12px;
+            color: #c9e6ff;
+            backdrop-filter: blur(5px);
+        }
+
+        #sandbox-panel h2 {
+            margin: 0 0 8px 0;
+            font-size: 13px;
+            letter-spacing: 0.03em;
+            color: #6ccfff;
+        }
+
+        #sandbox-panel .row {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 8px;
+            flex-wrap: wrap;
+        }
+
+        .sb-btn {
+            border: 1px solid #335b87;
+            background: #132a44;
+            color: #cfe6ff;
+            border-radius: 6px;
+            padding: 6px 8px;
+            font-size: 11px;
+            cursor: pointer;
+        }
+
+        .sb-btn:hover {
+            background: #1b3859;
+        }
+
+        .sb-btn.active {
+            border-color: #7ee1ff;
+            background: #174366;
+            color: #ffffff;
+        }
+
+        #layout-json {
+            width: 100%;
+            min-height: 92px;
+            max-height: 160px;
+            resize: vertical;
+            background: #0e2237;
+            border: 1px solid #2d4f76;
+            border-radius: 6px;
+            color: #d4ecff;
+            font-size: 11px;
+            padding: 7px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        }
+
+        .muted {
+            color: #87a8cb;
+            font-size: 10px;
+            line-height: 1.4;
+        }
+
+        /* Navigation Bar */
+        .navbar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 60px;
+            background: rgba(7, 20, 38, 0.95);
+            backdrop-filter: blur(8px);
+            border-bottom: 1px solid #2a4b72;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0 30px;
+            box-sizing: border-box;
+            z-index: 999;
+        }
+
+        .navbar-brand {
+            font-size: 18px;
+            font-weight: bold;
+            color: #39d6ff;
+            letter-spacing: 0.05em;
+        }
+
+        .navbar-actions {
+            display: flex;
+            gap: 12px;
+        }
+
+        .btn-login,
+        .btn-signup {
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: none;
+        }
+
+        .btn-login {
+            background: transparent;
+            border: 1px solid #39d6ff;
+            color: #39d6ff;
+        }
+
+        .btn-login:hover {
+            background: rgba(57, 214, 255, 0.1);
+            box-shadow: 0 0 12px rgba(57, 214, 255, 0.3);
+        }
+
+        .btn-signup {
+            background: #39d6ff;
+            color: #071426;
+            border: 1px solid #39d6ff;
+        }
+
+        .btn-signup:hover {
+            background: #51e0ff;
+            box-shadow: 0 0 12px rgba(57, 214, 255, 0.4);
+        }
+
+        /* Auth Modal */
+        .auth-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(4px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .auth-modal.active {
+            display: flex;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+            }
+
+            to {
+                opacity: 1;
+            }
+        }
+
+        .auth-container {
+            background: #0c2240;
+            border: 1px solid #2a4b72;
+            border-radius: 12px;
+            padding: 40px;
+            width: 100%;
+            max-width: 420px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+            animation: slideUp 0.3s ease;
+        }
+
+        @keyframes slideUp {
+            from {
+                transform: translateY(20px);
+                opacity: 0;
+            }
+
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+
+        .auth-header {
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .auth-header h2 {
+            margin: 0 0 8px 0;
+            color: #39d6ff;
+            font-size: 28px;
+            letter-spacing: 0.02em;
+        }
+
+        .auth-header p {
+            margin: 0;
+            color: #6e89ac;
+            font-size: 14px;
+        }
+
+        .auth-tabs {
+            display: flex;
+            gap: 0;
+            margin-bottom: 24px;
+            border-bottom: 1px solid #2a4b72;
+        }
+
+        .auth-tab {
+            flex: 1;
+            padding: 12px 0;
+            background: none;
+            border: none;
+            color: #6e89ac;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s ease;
+        }
+
+        .auth-tab.active {
+            color: #39d6ff;
+            border-bottom-color: #39d6ff;
+        }
+
+        .auth-form {
+            display: none;
+        }
+
+        .auth-form.active {
+            display: block;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 6px;
+            color: #c9e6ff;
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #335b87;
+            border-radius: 6px;
+            background: #132a44;
+            color: #e0f2ff;
+            font-size: 14px;
+            box-sizing: border-box;
+            transition: all 0.2s ease;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #39d6ff;
+            box-shadow: 0 0 8px rgba(57, 214, 255, 0.3);
+            background: #1a3a52;
+        }
+
+        .form-group input::placeholder {
+            color: #5a7a9b;
+        }
+
+        .form-remember {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 20px;
+            font-size: 13px;
+        }
+
+        .form-remember input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+            accent-color: #39d6ff;
+        }
+
+        .form-remember label {
+            margin: 0;
+            color: #6e89ac;
+            cursor: pointer;
+        }
+
+        .btn-submit {
+            width: 100%;
+            padding: 12px;
+            background: #39d6ff;
+            color: #071426;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-submit:hover {
+            background: #51e0ff;
+            box-shadow: 0 0 12px rgba(57, 214, 255, 0.4);
+        }
+
+        .btn-submit:active {
+            transform: scale(0.98);
+        }
+
+        .auth-divider {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin: 20px 0;
+            color: #5a7a9b;
+            font-size: 13px;
+        }
+
+        .auth-divider::before,
+        .auth-divider::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: #2a4b72;
+        }
+
+        .btn-social {
+            width: 100%;
+            padding: 10px;
+            background: transparent;
+            border: 1px solid #335b87;
+            border-radius: 6px;
+            color: #c9e6ff;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin-top: 10px;
+        }
+
+        .btn-social:hover {
+            background: rgba(57, 214, 255, 0.05);
+            border-color: #39d6ff;
+        }
+
+        .auth-footer {
+            text-align: center;
+            margin-top: 20px;
+            font-size: 13px;
+            color: #6e89ac;
+        }
+
+        .auth-footer a {
+            color: #39d6ff;
+            text-decoration: none;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .auth-footer a:hover {
+            text-decoration: underline;
+        }
+
+        .close-modal {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            width: 32px;
+            height: 32px;
+            background: transparent;
+            border: none;
+            color: #6e89ac;
+            font-size: 24px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+        .close-modal:hover {
+            color: #39d6ff;
+            transform: rotate(90deg);
+        }
+
+        .auth-container {
+            position: relative;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Navigation Bar -->
+    <nav class="navbar">
+        <div class="navbar-brand">PARKOUR_BOT</div>
+    </nav>
+
+    <!-- Auth Modal -->
+    <div class="auth-modal" id="auth-modal">
+        <div class="auth-container">
+            <button class="close-modal" id="btn-close-auth">&times;</button>
+
+            <div class="auth-header">
+                <h2>Access</h2>
+                <p>Merchants & Affiliates</p>
+            </div>
+
+            <div class="auth-tabs">
+                <button class="auth-tab active" data-tab="login">Login</button>
+                <button class="auth-tab" data-tab="signup">Sign Up</button>
+            </div>
+
+            <!-- Login Form -->
+            <form class="auth-form active" id="login-form" data-form="login">
+                <div class="form-group">
+                    <label for="login-email">Email Address</label>
+                    <input type="email" id="login-email" name="email" placeholder="your@email.com" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="login-password">Password</label>
+                    <input type="password" id="login-password" name="password" placeholder="••••••••" required>
+                </div>
+
+                <div class="form-remember">
+                    <input type="checkbox" id="login-remember" name="remember">
+                    <label for="login-remember">Remember me</label>
+                </div>
+
+                <button type="submit" class="btn-submit">Login</button>
+
+                <div class="auth-divider">or</div>
+
+                <button type="button" class="btn-social">Continue with Google</button>
+                <button type="button" class="btn-social">Continue with GitHub</button>
+
+                <div class="auth-footer">
+                    <p>Don't have an account? <a id="switch-to-signup">Sign up here</a></p>
+                </div>
+            </form>
+
+            <!-- Signup Form -->
+            <form class="auth-form" id="signup-form" data-form="signup">
+                <div class="form-group">
+                    <label for="signup-name">Full Name</label>
+                    <input type="text" id="signup-name" name="name" placeholder="John Doe" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="signup-email">Email Address</label>
+                    <input type="email" id="signup-email" name="email" placeholder="your@email.com" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="signup-password">Password</label>
+                    <input type="password" id="signup-password" name="password" placeholder="••••••••" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="signup-confirm">Confirm Password</label>
+                    <input type="password" id="signup-confirm" name="confirm" placeholder="••••••••" required>
+                </div>
+
+                <div class="form-remember">
+                    <input type="checkbox" id="signup-agree" name="agree" required>
+                    <label for="signup-agree">I agree to the Terms & Conditions</label>
+                </div>
+
+                <button type="submit" class="btn-submit">Create Account</button>
+
+                <div class="auth-divider">or</div>
+
+                <button type="button" class="btn-social">Sign up with Google</button>
+                <button type="button" class="btn-social">Sign up with GitHub</button>
+
+                <div class="auth-footer">
+                    <p>Already have an account? <a id="switch-to-login">Login here</a></p>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="game-stage">
+        <h1>Parkour Sandbox Builder</h1>
+        <div class="hint">D: debug | S: settings | R: respawn<br>Del: remove | Esc: cancel | Arrows: nudge (Shift:
+            bigger)</div>
+        <div id="draw-ghost"></div>
+    </div>
+
+    <aside id="sandbox-panel" data-bot-ignore>
+        <h2>Sandbox Controls</h2>
+        <div class="row">
+            <button class="sb-btn active" data-mode="draw">Draw Mode</button>
+            <button class="sb-btn" data-mode="select">Select Mode</button>
+        </div>
+        <div class="row">
+            <button class="sb-btn active" data-type="solid">Solid</button>
+            <button class="sb-btn" data-type="oneway">One-way</button>
+            <button class="sb-btn" data-type="wall">Wall</button>
+            <button class="sb-btn" data-type="goal">Goal</button>
+            <button class="sb-btn" data-type="danger">Danger</button>
+        </div>
+        <div class="row">
+            <button class="sb-btn" id="toggle-snap">Snap: ON</button>
+            <button class="sb-btn" id="duplicate-selected">Duplicate</button>
+            <button class="sb-btn" id="rescan-now">Rescan Bot</button>
+            <button class="sb-btn" id="clear-all">Clear All</button>
+        </div>
+        <div class="row">
+            <button class="sb-btn" id="export-layout">Export JSON</button>
+            <button class="sb-btn" id="import-layout">Import JSON</button>
+        </div>
+        <textarea id="layout-json" placeholder="Obstacle layout JSON appears here..."></textarea>
+        <div class="muted">Draw: drag on empty space. Move: drag selected obstacle. Resize: drag yellow corner. Right
+            click or Del to delete. Layout autosaves in your browser.</div>
+    </aside>
+
+    <script>
+        // Authentication Modal Handler
+        (() => {
+            const modal = document.getElementById('auth-modal');
+            const loginBtn = document.getElementById('btn-open-login');
+            const signupBtn = document.getElementById('btn-open-signup');
+            const closeBtn = document.getElementById('btn-close-auth');
+            const tabs = document.querySelectorAll('.auth-tab');
+            const forms = document.querySelectorAll('.auth-form');
+            const loginForm = document.getElementById('login-form');
+            const signupForm = document.getElementById('signup-form');
+            const switchToSignup = document.getElementById('switch-to-signup');
+            const switchToLogin = document.getElementById('switch-to-login');
+
+            function openModal(tab = 'login') {
+                modal.classList.add('active');
+                switchTab(tab);
+            }
+
+            function closeModal() {
+                modal.classList.remove('active');
+            }
+
+            function switchTab(tabName) {
+                tabs.forEach(tab => {
+                    const isActive = tab.dataset.tab === tabName;
+                    tab.classList.toggle('active', isActive);
+                });
+                forms.forEach(form => {
+                    const isActive = form.dataset.form === tabName;
+                    form.classList.toggle('active', isActive);
+                });
+            }
+
+            loginBtn?.addEventListener('click', () => openModal('login'));
+            signupBtn?.addEventListener('click', () => openModal('signup'));
+            closeBtn?.addEventListener('click', closeModal);
+            switchToSignup?.addEventListener('click', (e) => {
+                e.preventDefault();
+                switchTab('signup');
+            });
+            switchToLogin?.addEventListener('click', (e) => {
+                e.preventDefault();
+                switchTab('login');
+            });
+
+            modal?.addEventListener('click', (e) => {
+                if (e.target === modal) {
+                    closeModal();
+                }
+            });
+
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' && modal?.classList.contains('active')) {
+                    closeModal();
+                }
+            });
+
+            // Handle form submissions
+            loginForm?.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const email = document.getElementById('login-email').value;
+                const password = document.getElementById('login-password').value;
+                const remember = document.getElementById('login-remember').checked;
+
+                console.log('Login attempt:', { email, password, remember });
+                // Add your authentication logic here
+                closeModal();
+            });
+
+            signupForm?.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const name = document.getElementById('signup-name').value;
+                const email = document.getElementById('signup-email').value;
+                const password = document.getElementById('signup-password').value;
+                const confirm = document.getElementById('signup-confirm').value;
+
+                if (password !== confirm) {
+                    alert('Passwords do not match');
+                    return;
+                }
+
+                console.log('Signup attempt:', { name, email, password });
+                // Add your registration logic here
+                closeModal();
+            });
+
+            // Handle social login buttons
+            document.querySelectorAll('.btn-social').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const provider = btn.textContent.includes('Google') ? 'Google' : 'GitHub';
+                    console.log('Social login with:', provider);
+                    // Add your social login logic here
+                });
+            });
+        })();
+    </script>
+
+    <script>
+        const stage = document.getElementById('game-stage');
+        const ghost = document.getElementById('draw-ghost');
+        const panel = document.getElementById('sandbox-panel');
+        const jsonBox = document.getElementById('layout-json');
+        const modeButtons = Array.from(panel.querySelectorAll('[data-mode]'));
+        const typeButtons = Array.from(panel.querySelectorAll('[data-type]'));
+        const duplicateButton = document.getElementById('duplicate-selected');
+
+        const STORAGE_KEY = 'pk_sandbox_layout_v1';
+        const MIN_SIZE = 10;
+        const SNAP = 8;
+        let snapEnabled = true;
+        let currentMode = 'draw';
+        let currentType = 'solid';
+        let selected = null;
+        let drawState = null;
+        let dragState = null;
+        let resizeState = null;
+        let obstacleCounter = 1;
+        let rescanTimer = null;
+        let persistTimer = null;
+
+        function clamp(v, lo, hi) {
+            if (hi < lo) return lo;
+            return Math.max(lo, Math.min(hi, v));
+        }
+
+        function snapPosition(v) {
+            return snapEnabled ? Math.round(v / SNAP) * SNAP : v;
+        }
+
+        function snapSize(v) {
+            if (!snapEnabled) return v;
+            return Math.max(MIN_SIZE, Math.ceil(v / SNAP) * SNAP);
+        }
+
+        function stagePoint(evt) {
+            const rect = stage.getBoundingClientRect();
+            const rawX = clamp(evt.clientX - rect.left, 0, rect.width);
+            const rawY = clamp(evt.clientY - rect.top, 0, rect.height);
+            const x = clamp(snapPosition(rawX), 0, rect.width);
+            const y = clamp(snapPosition(rawY), 0, rect.height);
+            return { x, y, width: rect.width, height: rect.height };
+        }
+
+        function scheduleRescan() {
+            if (rescanTimer) clearTimeout(rescanTimer);
+            rescanTimer = setTimeout(() => {
+                const rt = window.ParkourBotInstance;
+                if (rt && typeof rt.rescan === 'function') rt.rescan();
+                if (window.ParkourBot && typeof window.ParkourBot.rescan === 'function') window.ParkourBot.rescan();
+            }, 120);
+        }
+
+        function persistNow() {
+            try {
+                window.localStorage.setItem(STORAGE_KEY, JSON.stringify(serialize()));
+            } catch (_) {
+                // ignore storage failures
+            }
+        }
+
+        function schedulePersist() {
+            if (persistTimer) clearTimeout(persistTimer);
+            persistTimer = setTimeout(() => {
+                persistNow();
+            }, 140);
+        }
+
+        function setMode(mode) {
+            currentMode = mode === 'select' ? 'select' : 'draw';
+            modeButtons.forEach((btn) => {
+                const active = btn.dataset.mode === currentMode;
+                btn.classList.toggle('active', active);
+            });
+            stage.classList.toggle('select-mode', currentMode === 'select');
+            if (currentMode === 'select') {
+                drawState = null;
+                ghost.style.display = 'none';
+            }
+        }
+
+        function typeClass(type) {
+            return type === 'solid' ? '' : type;
+        }
+
+        function applyType(el, type) {
+            el.className = 'obstacle';
+            const extra = typeClass(type);
+            if (extra) el.classList.add(extra);
+            el.dataset.type = type;
+            el.removeAttribute('data-bot-solid');
+            el.removeAttribute('data-bot-oneway');
+            if (type === 'oneway') el.setAttribute('data-bot-oneway', '');
+            else el.setAttribute('data-bot-solid', '');
+        }
+
+        function setRect(el, x, y, w, h) {
+            const stageWidth = stage.clientWidth;
+            const stageHeight = stage.clientHeight;
+            const width = snapSize(Math.max(MIN_SIZE, w));
+            const height = snapSize(Math.max(MIN_SIZE, h));
+            const left = clamp(snapPosition(x), 0, Math.max(0, stageWidth - width));
+            const top = clamp(snapPosition(y), 0, Math.max(0, stageHeight - height));
+            el.style.left = left + 'px';
+            el.style.top = top + 'px';
+            el.style.width = width + 'px';
+            el.style.height = height + 'px';
+        }
+
+        function deselect() {
+            if (!selected) return;
+            selected.classList.remove('selected');
+            selected = null;
+        }
+
+        function select(el) {
+            if (selected === el) return;
+            deselect();
+            selected = el;
+            selected.classList.add('selected');
+        }
+
+        function serialize() {
+            const all = Array.from(stage.querySelectorAll('.obstacle'));
+            return all.map(el => ({
+                type: el.dataset.type || 'solid',
+                x: Math.round(parseFloat(el.style.left || '0')),
+                y: Math.round(parseFloat(el.style.top || '0')),
+                w: Math.round(parseFloat(el.style.width || '0')),
+                h: Math.round(parseFloat(el.style.height || '0'))
+            }));
+        }
+
+        function clearObstacles(options = {}) {
+            const persist = options.persist !== false;
+            const rescan = options.rescan !== false;
+            stage.querySelectorAll('.obstacle').forEach(el => el.remove());
+            deselect();
+            if (persist) schedulePersist();
+            if (rescan) scheduleRescan();
+        }
+
+        function makeObstacle(x, y, w, h, type, options = {}) {
+            const rescan = options.rescan !== false;
+            const persist = options.persist !== false;
+            const el = document.createElement('div');
+            applyType(el, type);
+            el.id = `obs-${obstacleCounter++}`;
+            setRect(el, x, y, w, h);
+
+            const handle = document.createElement('div');
+            handle.className = 'resize-handle';
+            el.appendChild(handle);
+
+            el.addEventListener('contextmenu', (evt) => {
+                evt.preventDefault();
+                if (selected === el) deselect();
+                el.remove();
+                scheduleRescan();
+                schedulePersist();
+            });
+
+            el.addEventListener('pointerdown', (evt) => {
+                if (evt.button !== 0) return;
+                evt.preventDefault();
+                evt.stopPropagation();
+                select(el);
+                const p = stagePoint(evt);
+                if (evt.target === handle) {
+                    resizeState = {
+                        el,
+                        startX: p.x,
+                        startY: p.y,
+                        baseLeft: parseFloat(el.style.left),
+                        baseTop: parseFloat(el.style.top),
+                        baseW: parseFloat(el.style.width),
+                        baseH: parseFloat(el.style.height)
+                    };
+                } else {
+                    dragState = {
+                        el,
+                        startX: p.x,
+                        startY: p.y,
+                        baseLeft: parseFloat(el.style.left),
+                        baseTop: parseFloat(el.style.top)
+                    };
+                }
+                el.setPointerCapture(evt.pointerId);
+            });
+
+            stage.appendChild(el);
+            if (rescan) scheduleRescan();
+            if (persist) schedulePersist();
+            return el;
+        }
+
+        function loadLayout(list, options = {}) {
+            const persist = options.persist !== false;
+            if (!Array.isArray(list)) return;
+            clearObstacles({ persist: false, rescan: false });
+            for (const item of list) {
+                if (!item || typeof item !== 'object') continue;
+                const type = typeof item.type === 'string' ? item.type : 'solid';
+                const x = Number(item.x);
+                const y = Number(item.y);
+                const w = Number(item.w);
+                const h = Number(item.h);
+                if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) continue;
+                makeObstacle(x, y, w, h, type, { rescan: false, persist: false });
+            }
+            if (persist) schedulePersist();
+            scheduleRescan();
+        }
+
+        function restoreLayout() {
+            try {
+                const raw = window.localStorage.getItem(STORAGE_KEY);
+                if (!raw) return;
+                const parsed = JSON.parse(raw);
+                if (!Array.isArray(parsed)) return;
+                loadLayout(parsed, { persist: false });
+            } catch (_) {
+                // ignore malformed saved layouts
+            }
+        }
+
+        function duplicateSelected() {
+            if (!selected) return;
+            const x = parseFloat(selected.style.left || '0');
+            const y = parseFloat(selected.style.top || '0');
+            const w = parseFloat(selected.style.width || '0');
+            const h = parseFloat(selected.style.height || '0');
+            const offset = snapEnabled ? SNAP * 2 : 20;
+            const nx = clamp(x + offset, 0, Math.max(0, stage.clientWidth - w));
+            const ny = clamp(y + offset, 0, Math.max(0, stage.clientHeight - h));
+            const clone = makeObstacle(nx, ny, w, h, selected.dataset.type || 'solid');
+            select(clone);
+        }
+
+        function nudgeSelected(dx, dy) {
+            if (!selected) return;
+            const w = parseFloat(selected.style.width || '0');
+            const h = parseFloat(selected.style.height || '0');
+            const x = parseFloat(selected.style.left || '0');
+            const y = parseFloat(selected.style.top || '0');
+            const nx = clamp(x + dx, 0, Math.max(0, stage.clientWidth - w));
+            const ny = clamp(y + dy, 0, Math.max(0, stage.clientHeight - h));
+            setRect(selected, nx, ny, w, h);
+            scheduleRescan();
+            schedulePersist();
+        }
+
+        modeButtons.forEach((btn) => {
+            btn.addEventListener('click', () => {
+                setMode(btn.dataset.mode || 'draw');
+            });
+        });
+
+        typeButtons.forEach((btn) => {
+            btn.addEventListener('click', () => {
+                typeButtons.forEach((b) => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentType = btn.dataset.type || 'solid';
+            });
+        });
+
+        document.getElementById('toggle-snap').addEventListener('click', (evt) => {
+            snapEnabled = !snapEnabled;
+            evt.currentTarget.textContent = `Snap: ${snapEnabled ? 'ON' : 'OFF'}`;
+        });
+
+        duplicateButton.addEventListener('click', () => {
+            duplicateSelected();
+        });
+
+        document.getElementById('rescan-now').addEventListener('click', () => {
+            scheduleRescan();
+        });
+
+        document.getElementById('clear-all').addEventListener('click', () => {
+            clearObstacles();
+            jsonBox.value = '[]';
+        });
+
+        document.getElementById('export-layout').addEventListener('click', async () => {
+            const json = JSON.stringify(serialize(), null, 2);
+            jsonBox.value = json;
+            try {
+                await navigator.clipboard.writeText(json);
+            } catch (_) {
+                // ignore clipboard failures
+            }
+        });
+
+        document.getElementById('import-layout').addEventListener('click', () => {
+            if (!jsonBox.value.trim()) return;
+            try {
+                const parsed = JSON.parse(jsonBox.value);
+                loadLayout(parsed);
+            } catch (_) {
+                // keep current stage when parse fails
+            }
+        });
+
+        stage.addEventListener('pointerdown', (evt) => {
+            if (evt.button !== 0) return;
+            if (evt.target !== stage) return;
+            evt.preventDefault();
+            if (currentMode === 'select') {
+                deselect();
+                return;
+            }
+            deselect();
+            const p = stagePoint(evt);
+            drawState = { startX: p.x, startY: p.y, x: p.x, y: p.y };
+            ghost.style.display = 'block';
+            setRect(ghost, p.x, p.y, 1, 1);
+            stage.setPointerCapture(evt.pointerId);
+        });
+
+        window.addEventListener('pointermove', (evt) => {
+            if (drawState) {
+                const p = stagePoint(evt);
+                drawState.x = p.x;
+                drawState.y = p.y;
+                const x = Math.min(drawState.startX, drawState.x);
+                const y = Math.min(drawState.startY, drawState.y);
+                const w = Math.abs(drawState.x - drawState.startX);
+                const h = Math.abs(drawState.y - drawState.startY);
+                setRect(ghost, x, y, Math.max(1, w), Math.max(1, h));
+                return;
+            }
+
+            if (dragState) {
+                const p = stagePoint(evt);
+                const dx = p.x - dragState.startX;
+                const dy = p.y - dragState.startY;
+                const w = parseFloat(dragState.el.style.width);
+                const h = parseFloat(dragState.el.style.height);
+                const x = clamp(dragState.baseLeft + dx, 0, stage.clientWidth - w);
+                const y = clamp(dragState.baseTop + dy, 0, stage.clientHeight - h);
+                setRect(dragState.el, x, y, w, h);
+                scheduleRescan();
+                schedulePersist();
+                return;
+            }
+
+            if (resizeState) {
+                const p = stagePoint(evt);
+                const w = clamp(resizeState.baseW + (p.x - resizeState.startX), MIN_SIZE, stage.clientWidth - resizeState.baseLeft);
+                const h = clamp(resizeState.baseH + (p.y - resizeState.startY), MIN_SIZE, stage.clientHeight - resizeState.baseTop);
+                setRect(resizeState.el, resizeState.baseLeft, resizeState.baseTop, w, h);
+                scheduleRescan();
+                schedulePersist();
+            }
+        });
+
+        window.addEventListener('pointerup', () => {
+            if (drawState) {
+                const x = Math.min(drawState.startX, drawState.x);
+                const y = Math.min(drawState.startY, drawState.y);
+                const w = Math.abs(drawState.x - drawState.startX);
+                const h = Math.abs(drawState.y - drawState.startY);
+                if (w >= MIN_SIZE && h >= MIN_SIZE) {
+                    select(makeObstacle(x, y, w, h, currentType));
+                }
+                drawState = null;
+                ghost.style.display = 'none';
+            }
+
+            dragState = null;
+            resizeState = null;
+        });
+
+        window.addEventListener('keydown', (evt) => {
+            if (document.activeElement !== jsonBox) {
+                const step = evt.shiftKey ? (snapEnabled ? SNAP * 4 : 24) : (snapEnabled ? SNAP : 6);
+                if (evt.key === 'ArrowLeft') {
+                    evt.preventDefault();
+                    nudgeSelected(-step, 0);
+                    return;
+                }
+                if (evt.key === 'ArrowRight') {
+                    evt.preventDefault();
+                    nudgeSelected(step, 0);
+                    return;
+                }
+                if (evt.key === 'ArrowUp') {
+                    evt.preventDefault();
+                    nudgeSelected(0, -step);
+                    return;
+                }
+                if (evt.key === 'ArrowDown') {
+                    evt.preventDefault();
+                    nudgeSelected(0, step);
+                    return;
+                }
+            }
+
+            if (evt.key === 'Delete' || evt.key === 'Backspace') {
+                if (selected && document.activeElement !== jsonBox) {
+                    const doomed = selected;
+                    deselect();
+                    doomed.remove();
+                    scheduleRescan();
+                    schedulePersist();
+                }
+            } else if (evt.key === 'Escape') {
+                drawState = null;
+                dragState = null;
+                resizeState = null;
+                ghost.style.display = 'none';
+                deselect();
+            }
+        });
+
+        restoreLayout();
+        setMode('draw');
+        jsonBox.value = JSON.stringify(serialize(), null, 2);
+        scheduleRescan();
+    </script>
+
+    <script src="./release/loader.js" data-key="pk_training_grounds" data-bot="on" data-theme="neon"
+        data-colliders=".obstacle" data-deny="[data-bot-ignore],[data-bot-ignore] *"></script>
+</body>
+
+</html>
