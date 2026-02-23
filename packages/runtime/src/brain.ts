@@ -982,7 +982,10 @@ export class Brain {
     }
 
     private isEmergencyJumpReason(reason: string): boolean {
-        return reason === 'gap-jump' || reason === 'drop-through' || reason.startsWith('offscreen');
+        return reason === 'gap-jump'
+            || reason === 'drop-through'
+            || reason === 'intermediate-edge-hop'
+            || reason.startsWith('offscreen');
     }
 
     private isNavReadyForJump(pose: Pose, reason: string, botCenterX: number, botFeetY: number, targetY: number | null): boolean {
