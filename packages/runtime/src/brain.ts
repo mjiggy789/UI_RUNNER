@@ -305,6 +305,7 @@ export class Brain {
     currentState: 'idle' | 'seek' = 'idle';
     bestProgressDist: number = Infinity;
     progressStagnationTimer: number = 0;
+    fsmStagnationTimer: number = 0;
     hitConfirmedTimer: number = 0;
     lastHitId: number | null = null;
     jumpCooldown: number = 0;
@@ -538,6 +539,7 @@ export class Brain {
         this.currentState = 'seek';
         this.bestProgressDist = Infinity;
         this.progressStagnationTimer = 0;
+        this.fsmStagnationTimer = 0;
         this.retryCount = 0;
         this.moveCommitDir = 0;
         this.moveCommitTimer = 0;
@@ -583,6 +585,7 @@ export class Brain {
         this.currentState = 'idle';
         this.bestProgressDist = Infinity;
         this.progressStagnationTimer = 0;
+        this.fsmStagnationTimer = 0;
         this.approachPhase = 'direct';
         this.approachX = null;
         this.moveCommitDir = 0;
@@ -648,6 +651,7 @@ export class Brain {
 
         this.bestProgressDist = Infinity;
         this.progressStagnationTimer = 0;
+        this.fsmStagnationTimer = 0;
         this.hitConfirmedTimer = 0;
         this.lastHitId = null;
         this.jumpCooldown = 0;
@@ -1678,6 +1682,19 @@ export class Brain {
         };
         this.log.push(entry);
         if (this.log.length > MAX_LOG_ENTRIES) this.log.shift();
+
+        // Dispatch significant events for telemetry
+        if (event === 'PLAN_FAILURE' || event.startsWith('REROUTE')) {
+            window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
+                detail: {
+                    type: event.toLowerCase(),
+                    moveDx: targetDx,
+                    targetId: this.targetPlatform?.id,
+                    retry: this.retryCount,
+                    reason: detail
+                }
+            }));
+        }
     }
 
     getLogText(): string {
@@ -2139,8 +2156,17 @@ export class Brain {
                     this.progressStagnationTimer += dt;
                 }
 
-                // Eject if stagnant for too long (Progress Metric Timeout)
-                if (this.progressStagnationTimer > 4.5) {
+                // FSM Watchdog: separate timer for "not getting ready to jump"
+                // Unlike progressStagnationTimer, this does NOT reset when distance improves.
+                if (this.navState !== 'nav-ready' && this.navState !== 'nav-commit') {
+                    this.fsmStagnationTimer += dt;
+                } else {
+                    this.fsmStagnationTimer = 0;
+                }
+
+                // Eject if stagnant for too long (Progress Metric Timeout OR FSM Stagnation)
+                if (this.progressStagnationTimer > 4.5 || this.fsmStagnationTimer > 4.5) {
+                    const reason = this.progressStagnationTimer > 4.5 ? 'progress-stagnation' : 'fsm-stagnation';
                     const nearTarget = targetY !== null
                         && Math.abs(targetDx) < SEEK_TIMEOUT_NEAR_DX
                         && targetDy !== null
@@ -2149,13 +2175,14 @@ export class Brain {
                     if (this.manualMode && this.retryCount < 3) {
                         this.retryCount++;
                         this.progressStagnationTimer = 0;
-                        this.recordLog('MANUAL_STALL_RETRY', pose, `retry ${this.retryCount}/3 dx=${Math.round(targetDx)} dy=${targetDy !== null ? Math.round(targetDy) : '-'}`);
+                        this.fsmStagnationTimer = 0;
+                        this.recordLog('MANUAL_STALL_RETRY', pose, `retry ${this.retryCount}/3 dx=${Math.round(targetDx)} dy=${targetDy !== null ? Math.round(targetDy) : '-'} reason=${reason}`);
                     } else {
                         if (this.manualMode) {
                             this.recordLog('MANUAL_GIVE_UP', pose, `stalled at manual target after ${this.retryCount} retries`);
                         }
                         this.retryCount++;
-                        this.recordLog('PLAN_FAILURE', pose, `stagnation t=${this.progressStagnationTimer.toFixed(1)} dist=${Math.round(currentDist)} lock=${this.lockedTargetId ?? '-'}`);
+                        this.recordLog('PLAN_FAILURE', pose, `${reason} t=${Math.max(this.progressStagnationTimer, this.fsmStagnationTimer).toFixed(1)} dist=${Math.round(currentDist)} lock=${this.lockedTargetId ?? '-'}`);
 
                         if (this.navState === 'nav-approach' && this.targetPlatform) {
                             this.recordLog('NAV_APPROACH_FAIL', pose, 'timeout before takeoff zone');
@@ -2167,6 +2194,7 @@ export class Brain {
                         }
                         this.bestProgressDist = Infinity;
                         this.progressStagnationTimer = 0;
+                        this.fsmStagnationTimer = 0;
                         this.attemptBreadcrumbRecovery(pose, 'seek-timeout');
                     }
                 }
@@ -2199,6 +2227,7 @@ export class Brain {
                         this.targetX = wpCx;
                         this.bestProgressDist = Infinity;
                         this.progressStagnationTimer = 0;
+            this.fsmStagnationTimer = 0;
                         this.approachPhase = 'direct';
                         this.approachX = null;
                         return this.think(pose, 0);
@@ -2950,6 +2979,7 @@ export class Brain {
                             this.recordLog('RESUME_LOCK', pose, `waypoint ID${arrivedId} -> final ID${lockId}`);
                             this.waypointStickyUntil = 0;
                             this.waypointOriginId = null;
+                        this.fsmStagnationTimer = 0;
                         } else {
                             // Locked target disappeared (DOM changed). Fall back cleanly.
                             this.recordLog('GIVE_UP_LOCK', pose, `locked target missing after waypoint ID${arrivedId}`);
@@ -2958,6 +2988,7 @@ export class Brain {
                             this.currentState = 'idle';
                             this.bestProgressDist = Infinity;
                             this.progressStagnationTimer = 0;
+                        this.fsmStagnationTimer = 0;
                             this.targetPlatform = null;
                             this.targetX = null;
                             this.autoTargetY = null;
@@ -2982,6 +3013,7 @@ export class Brain {
                         this.currentState = 'idle';
                         this.bestProgressDist = Infinity;
                         this.progressStagnationTimer = 0;
+                        this.fsmStagnationTimer = 0;
                         this.targetPlatform = null;
                         this.targetX = null;
                         this.autoTargetY = null;
@@ -3010,6 +3042,7 @@ export class Brain {
                             }
                             this.bestProgressDist = Infinity;
                             this.progressStagnationTimer = 0;
+                        this.fsmStagnationTimer = 0;
                             this.attemptBreadcrumbRecovery(pose, 'fell-below-target');
                         }
                     }
@@ -3028,6 +3061,7 @@ export class Brain {
                             // Reset local progress to prevent instant re-trigger
                             this.bestProgressDist = Infinity;
                             this.progressStagnationTimer = 0;
+                            this.fsmStagnationTimer = 0;
 
                             // Unlike pure stagnation, physical stuck means we tried an edge and completely snagged.
                             const nearTarget = targetX !== null && targetY !== null
@@ -3514,6 +3548,7 @@ export class Brain {
             this.currentState = 'seek';
             this.bestProgressDist = Infinity;
             this.progressStagnationTimer = 0;
+            this.fsmStagnationTimer = 0;
             this.approachPhase = 'direct';
             this.approachX = null;
             this.moveCommitDir = 0;
@@ -3747,6 +3782,7 @@ export class Brain {
             this.currentState = 'seek';
             this.bestProgressDist = Infinity;
             this.progressStagnationTimer = 0;
+            this.fsmStagnationTimer = 0;
             this.retryCount = 0;
             this.approachPhase = 'direct';
             this.approachX = null;
@@ -3894,6 +3930,16 @@ export class Brain {
                 pose,
                 `flip=${this.facingFlipCount} stall=${this.stallTimer.toFixed(2)} dx=${Math.round(moveDx)} h=${Math.round(heightDiff)} phase=${this.approachPhase} commit=${commitWindow.toFixed(2)}`
             );
+            window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
+                detail: {
+                    type: 'loop_warn',
+                    moveDx,
+                    heightDiff,
+                    stallTimer: this.stallTimer,
+                    flipCount: this.facingFlipCount,
+                    phase: this.approachPhase
+                }
+            }));
             this.loopWarned = true;
         } else if (!loopWarning) {
             this.loopWarned = false;
@@ -3911,6 +3957,16 @@ export class Brain {
                 pose,
                 `flip=${this.facingFlipCount} stall=${this.stallTimer.toFixed(2)} dx=${Math.round(moveDx)} h=${Math.round(heightDiff)} phase=${this.approachPhase}`
             );
+            window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
+                detail: {
+                    type: 'glitch_loop',
+                    moveDx,
+                    heightDiff,
+                    stallTimer: this.stallTimer,
+                    flipCount: this.facingFlipCount,
+                    phase: this.approachPhase
+                }
+            }));
             this.invalidateActiveManeuver(pose, 'ping-pong', 5000);
             if (!this.activeManeuver && pose.groundedId !== null && this.targetPlatform) {
                 this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, 'ping-pong', 5000);
@@ -4160,6 +4216,7 @@ export class Brain {
         this.currentState = 'seek';
         this.bestProgressDist = Infinity;
         this.progressStagnationTimer = 0;
+        this.fsmStagnationTimer = 0;
         this.retryCount = 0;
         this.approachPhase = 'direct';
         this.approachX = null;
@@ -4218,6 +4275,7 @@ export class Brain {
                     this.currentState = 'seek';
                     this.bestProgressDist = Infinity;
                     this.progressStagnationTimer = 0;
+                    this.fsmStagnationTimer = 0;
                     this.approachPhase = 'direct';
                     this.approachX = null;
                     this.navState = 'nav-align';
@@ -4241,6 +4299,7 @@ export class Brain {
                     this.currentState = 'seek';
                     this.bestProgressDist = Infinity;
                     this.progressStagnationTimer = 0;
+                    this.fsmStagnationTimer = 0;
                     this.approachPhase = 'direct';
                     this.approachX = null;
                     this.navState = 'nav-align';
@@ -4258,6 +4317,7 @@ export class Brain {
         this.targetX = null;
         this.autoTargetY = null;
         this.currentState = 'idle';
+        this.fsmStagnationTimer = 0;
         this.resetManeuverTracking();
     }
 
@@ -4265,6 +4325,7 @@ export class Brain {
         this.setStationaryPlatformTarget(waypoint, pose.x + pose.width / 2, true);
         this.bestProgressDist = Infinity;
         this.progressStagnationTimer = 0;
+        this.fsmStagnationTimer = 0;
         this.approachPhase = 'direct';
         this.approachX = null;
         this.moveCommitDir = 0;
@@ -4435,6 +4496,7 @@ export class Brain {
             this.setStationaryPlatformTarget(pick, pose.x + pose.width / 2, true);
             this.bestProgressDist = Infinity;
             this.progressStagnationTimer = 0;
+            this.fsmStagnationTimer = 0;
             this.approachPhase = 'direct';
             this.approachX = null;
             this.moveCommitDir = 0;
@@ -4474,6 +4536,7 @@ export class Brain {
                 this.setStationaryPlatformTarget(locked, pose.x + pose.width / 2, true);
                 this.bestProgressDist = Infinity;
                 this.progressStagnationTimer = 0;
+                this.fsmStagnationTimer = 0;
                 this.noteWaypointSwitch(performance.now());
                 this.recordLog('REROUTE_LOCK', pose, `${reason}: direct lock ID${locked.id}`);
             } else {
@@ -4487,6 +4550,7 @@ export class Brain {
                 this.resetManeuverTracking();
                 this.bestProgressDist = Infinity;
                 this.progressStagnationTimer = 0;
+                this.fsmStagnationTimer = 0;
                 this.recordLog('REROUTE_BLIND', pose, `${reason}: no platform lock, reselection`);
                 this.pickNewTarget(pose);
             }
@@ -4660,6 +4724,7 @@ export class Brain {
                         this.recordLog('PLAN_WAYPOINT', pose, `ID${startId} -> ID${wpId} -> Final ID${this.lockedTargetId}`);
                         this.bestProgressDist = Infinity;
                         this.progressStagnationTimer = 0;
+                        this.fsmStagnationTimer = 0;
                         this.waypointStickyUntil = now + WAYPOINT_STICKY_MS;
                         this.waypointOriginId = startId;
                         this.noteWaypointSwitch(now);
@@ -4691,6 +4756,7 @@ export class Brain {
             this.setStationaryPlatformTarget(locked, pose.x + pose.width / 2, true);
             this.bestProgressDist = Infinity;
             this.progressStagnationTimer = 0;
+            this.fsmStagnationTimer = 0;
             this.noteWaypointSwitch(now);
         }
         this.waypointStickyUntil = 0;

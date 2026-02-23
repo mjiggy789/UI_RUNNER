@@ -44,7 +44,8 @@ class Runtime {
     config: RuntimeOptions;
     lastTime: number = 0;
     running: boolean = false;
-    enabled: boolean = true;
+    private _enabled: boolean = true;
+    get enabled(): boolean { return this._enabled; }
 
     debugMode: boolean = false;
     visualizationSettings: DebugVisualizationSettings = {
@@ -63,12 +64,20 @@ class Runtime {
         this.mount = new BotMount(config);
         this.world = new World(config);
         this.controller = new Controller(this.world, window.innerWidth / 4, window.innerHeight / 2);
+        this.world.setPoseProvider(() => this.controller.pose);
         console.log('ParkourBot: Initialized at', window.innerWidth / 4, window.innerHeight / 2);
         this.renderer = new Renderer(document.createElement('canvas'), config.theme);
         this.brain = new Brain(this.world);
 
         // Listen for SPA navigation
         window.addEventListener('popstate', () => this.rescan());
+
+        // Listen for diagnostics
+        window.addEventListener('parkour-bot:diagnostic', (e: any) => {
+            if (this.config.features?.enableTelemetry && e.detail) {
+                this.sendTelemetry(e.detail.type, e.detail);
+            }
+        });
 
         // Keyboard handlers
         window.addEventListener('keydown', (e) => {
@@ -884,11 +893,18 @@ class Runtime {
 
     rescan() {
         console.log('ParkourBot: Rescanning world...');
+        if (this.config.features?.enableTelemetry) {
+            this.sendTelemetry('rescan', {
+                url: window.location.href,
+                timestamp: Date.now()
+            });
+        }
         this.world.fullRescan();
     }
 
     setEnabled(enabled: boolean) {
-        this.enabled = enabled;
+        if (this._enabled === enabled) return;
+        this._enabled = enabled;
 
         // Sync FAB visual state (in case called from API, not FAB click)
         this.mount.setFabState(enabled);
@@ -897,6 +913,10 @@ class Runtime {
             this.mount.getCanvas()?.style.setProperty('display', 'none');
         } else {
             this.mount.getCanvas()?.style.setProperty('display', 'block');
+        }
+
+        if (this.config.features?.enableTelemetry) {
+            this.sendTelemetry('pause_state', { enabled });
         }
 
         // Emit state event for external consumers
@@ -930,67 +950,71 @@ class Runtime {
     tick(now: number) {
         if (!this.running) return;
 
-        const dt = Math.min((now - this.lastTime) / 1000, 0.1);
-        this.lastTime = now;
+        try {
+            const dt = Math.min((now - this.lastTime) / 1000, 0.1);
+            this.lastTime = now;
 
-        // Update Manual Target if anchored (Scroll Correction)
-        if (this.brain.manualMode && this.manualAnchor) {
-            const viewportX = this.manualAnchor.x - window.scrollX;
-            const viewportY = this.manualAnchor.y - window.scrollY;
-            const snapped = this.brain.updateManualTarget(viewportX, viewportY);
-            if (snapped) {
-                this.manualAnchor = {
-                    x: snapped.x + window.scrollX,
-                    y: snapped.y + window.scrollY
-                };
-            }
-        } else {
-            this.manualAnchor = null;
-        }
-
-        if (this.enabled) {
-            const input = this.brain.think(this.controller.pose, dt);
-            const lockedTarget = this.brain.lockedTargetId !== null
-                ? this.world.colliders.get(this.brain.lockedTargetId) ?? null
-                : null;
-            const resolvedTargetY = this.brain.targetPlatform?.aabb.y1
-                ?? (this.brain.manualMode ? this.brain.manualTargetY : this.brain.autoTargetY)
-                ?? null;
-            this.controller.brainTargetX = this.brain.targetX;
-            if (this.brain.targetX === null) {
-                this.targetYAnchor = null;
-                this.controller.brainTargetY = null;
-            } else if (resolvedTargetY !== null) {
-                this.targetYAnchor = resolvedTargetY;
-                this.controller.brainTargetY = resolvedTargetY;
-            } else {
-                if (this.targetYAnchor === null) {
-                    this.targetYAnchor = this.controller.pose.y + this.controller.pose.height / 2;
+            // Update Manual Target if anchored (Scroll Correction)
+            if (this.brain.manualMode && this.manualAnchor) {
+                const viewportX = this.manualAnchor.x - window.scrollX;
+                const viewportY = this.manualAnchor.y - window.scrollY;
+                const snapped = this.brain.updateManualTarget(viewportX, viewportY);
+                if (snapped) {
+                    this.manualAnchor = {
+                        x: snapped.x + window.scrollX,
+                        y: snapped.y + window.scrollY
+                    };
                 }
-                this.controller.brainTargetY = this.targetYAnchor;
+            } else {
+                this.manualAnchor = null;
             }
-            this.controller.brainState = this.brain.currentState;
-            this.controller.brainHitConfirmed = this.brain.hitConfirmedTimer > 0;
-            this.controller.brainLastHitId = this.brain.lastHitId;
-            this.controller.brainStrictMode = this.brain.strictMode;
-            this.controller.brainRetryCount = this.brain.retryCount;
-            this.controller.brainManualMode = this.brain.manualMode;
-            this.controller.brainCurrentTargetId = this.brain.targetPlatform?.id ?? null;
-            this.controller.brainLockedTargetId = this.brain.lockedTargetId;
-            this.controller.brainLockedTargetX = lockedTarget ? (lockedTarget.aabb.x1 + lockedTarget.aabb.x2) / 2 : null;
-            this.controller.brainLockedTargetY = lockedTarget ? lockedTarget.aabb.y1 : null;
-            this.controller.brainDebugData = this.brain.debugSnapshot;
-            this.controller.update(dt, input);
 
-            const colliders = Array.from(this.world.colliders.values());
-            if (!this.renderer.ctx) {
-                const canvas = this.mount.getCanvas();
-                if (canvas) this.renderer = new Renderer(canvas, this.config.theme);
+            if (this.enabled) {
+                const input = this.brain.think(this.controller.pose, dt);
+                const lockedTarget = this.brain.lockedTargetId !== null
+                    ? this.world.colliders.get(this.brain.lockedTargetId) ?? null
+                    : null;
+                const resolvedTargetY = this.brain.targetPlatform?.aabb.y1
+                    ?? (this.brain.manualMode ? this.brain.manualTargetY : this.brain.autoTargetY)
+                    ?? null;
+                this.controller.brainTargetX = this.brain.targetX;
+                if (this.brain.targetX === null) {
+                    this.targetYAnchor = null;
+                    this.controller.brainTargetY = null;
+                } else if (resolvedTargetY !== null) {
+                    this.targetYAnchor = resolvedTargetY;
+                    this.controller.brainTargetY = resolvedTargetY;
+                } else {
+                    if (this.targetYAnchor === null) {
+                        this.targetYAnchor = this.controller.pose.y + this.controller.pose.height / 2;
+                    }
+                    this.controller.brainTargetY = this.targetYAnchor;
+                }
+                this.controller.brainState = this.brain.currentState;
+                this.controller.brainHitConfirmed = this.brain.hitConfirmedTimer > 0;
+                this.controller.brainLastHitId = this.brain.lastHitId;
+                this.controller.brainStrictMode = this.brain.strictMode;
+                this.controller.brainRetryCount = this.brain.retryCount;
+                this.controller.brainManualMode = this.brain.manualMode;
+                this.controller.brainCurrentTargetId = this.brain.targetPlatform?.id ?? null;
+                this.controller.brainLockedTargetId = this.brain.lockedTargetId;
+                this.controller.brainLockedTargetX = lockedTarget ? (lockedTarget.aabb.x1 + lockedTarget.aabb.x2) / 2 : null;
+                this.controller.brainLockedTargetY = lockedTarget ? lockedTarget.aabb.y1 : null;
+                this.controller.brainDebugData = this.brain.debugSnapshot;
+                this.controller.update(dt, input);
+
+                const colliders = Array.from(this.world.colliders.values());
+                if (!this.renderer.ctx) {
+                    const canvas = this.mount.getCanvas();
+                    if (canvas) this.renderer = new Renderer(canvas, this.config.theme);
+                }
+                this.renderer.draw(this.controller, colliders, this.debugMode, this.visualizationSettings);
+            } else {
+                // If disabled, just clear canvas or don't draw
+                this.renderer.ctx?.clearRect(0, 0, this.renderer.canvas.width, this.renderer.canvas.height);
             }
-            this.renderer.draw(this.controller, colliders, this.debugMode, this.visualizationSettings);
-        } else {
-            // If disabled, just clear canvas or don't draw
-            this.renderer.ctx?.clearRect(0, 0, this.renderer.canvas.width, this.renderer.canvas.height);
+        } catch (e) {
+            console.error('ParkourBot: Tick Loop Error', e);
         }
 
         requestAnimationFrame((t) => this.tick(t));
