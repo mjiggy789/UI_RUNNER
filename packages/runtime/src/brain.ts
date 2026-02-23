@@ -358,6 +358,8 @@ export class Brain {
     ticTacPersistTimer: number = 0;
     ticTacWallHoldTimer: number = 0;
     ticTacStallTimer: number = 0;
+    strandedTimer: number = 0;
+    strandedTargetId: number | null = null;
     ticTacBestY: number = Infinity;
     shaftClimbActive: boolean = false;
     shaftClimbWallDir: -1 | 1 = 1;
@@ -4135,6 +4137,7 @@ export class Brain {
             if (reachableNow.length > 0) {
                 this.recordLog('GRAPH_FILTER', pose, `reachable-now=${reachableNow.length}/${scoringPool.length}`);
                 scoringPool = reachableNow;
+                this.strandedTimer = 0;
             } else {
                 const reachableRelaxed = scoringPool.filter((c) =>
                     this.findPathWithContext(startId, c.id, pose, true, 180) !== null
@@ -4142,9 +4145,25 @@ export class Brain {
                 if (reachableRelaxed.length > 0) {
                     this.recordLog('GRAPH_RELAX', pose, `reachable-relaxed=${reachableRelaxed.length}/${scoringPool.length}`);
                     scoringPool = reachableRelaxed;
+                    this.strandedTimer = 0;
                 } else {
                     this.recordLog('GRAPH_FAIL', pose, `no maneuver path from ID${startId}`);
                     this.recordLog('GRAPH_FAIL_RELAX', pose, `using score-only candidates=${scoringPool.length}`);
+
+                    // Stranded Island Detection
+                    if (this.strandedTargetId === startId) {
+                        this.strandedTimer += 1.0;
+                    } else {
+                        this.strandedTargetId = startId;
+                        this.strandedTimer = 1.0;
+                    }
+
+                    if (this.strandedTimer >= 3.0) {
+                        this.recordLog('STRANDED_ALARM', pose, `platform ID${startId} has no exits. Escalating.`);
+                        this.triggerLoopHardFallback(pose, `island-ID${startId}`, 'stranded-island');
+                        this.strandedTimer = 0;
+                        return; // Abort target selection, fallback will handle it
+                    }
                 }
             }
         }
