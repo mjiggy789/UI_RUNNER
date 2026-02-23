@@ -2,10 +2,11 @@
 import { Collider, Config, AABB } from '@parkour-bot/shared';
 import { DOMSampler } from './sampler';
 import { computeWorldChecksum, type WorldChecksum } from './world-checksum';
+import { Pose } from './controller';
 
 const CELL_SIZE = 120;
-const MAX_COLLIDERS = 1500;
-const RESCAN_THROTTLE_MS = 1000;
+const MAX_COLLIDERS = 2500;
+const RESCAN_THROTTLE_MS = 500;
 
 class SpatialGrid {
     // Map key "x,y" -> Set of collider IDs
@@ -87,11 +88,16 @@ export class World {
 
     lastScrollY: number = 0;
     rescanTimeout: number | undefined;
+    getPose: (() => Pose) | null = null;
 
     constructor(config: Partial<Config>) {
         this.config = config;
         this.sampler = new DOMSampler(config);
         this.lastScrollY = window.scrollY;
+    }
+
+    setPoseProvider(provider: () => Pose) {
+        this.getPose = provider;
     }
 
     init() {
@@ -103,8 +109,26 @@ export class World {
         this.checksum = computeWorldChecksum(this.colliders.values());
     }
 
-    fullRescan() {
+    fullRescan(referencePoint?: { x: number; y: number }) {
         const list = this.sampler.scan();
+
+        // Prioritize colliders near the bot/reference point to ensure navigation doesn't break
+        // if the page is huge.
+        const ref = referencePoint || (this.getPose ? this.getPose() : null);
+        if (ref) {
+            // Sort in place: closer elements first
+            list.sort((a, b) => {
+                const acx = (a.aabb.x1 + a.aabb.x2) / 2;
+                const acy = a.aabb.y1; // Top edge matters most
+                const bcx = (b.aabb.x1 + b.aabb.x2) / 2;
+                const bcy = b.aabb.y1;
+
+                const distA = Math.abs(acx - ref.x) + Math.abs(acy - ref.y);
+                const distB = Math.abs(bcx - ref.x) + Math.abs(bcy - ref.y);
+                return distA - distB;
+            });
+        }
+
         if (list.length > MAX_COLLIDERS) {
             console.warn(`ParkourBot: Collider limit reached (${list.length} > ${MAX_COLLIDERS}). Truncating.`);
             list.length = MAX_COLLIDERS;
