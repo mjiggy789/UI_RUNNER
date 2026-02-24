@@ -3,6 +3,7 @@ import cors from 'cors';
 
 const app = express();
 const port = process.env.PORT || 3002;
+const LOG_SAMPLE_RATE = parseFloat(process.env.LOG_SAMPLE_RATE || '1.0');
 
 app.use(cors());
 app.use(express.json());
@@ -13,7 +14,9 @@ app.post('/event', (req, res) => {
     // Basic scrubbing (PII removal) - simplified demo
     // In production, check for sensitive fields in event.payload
 
-    console.log('[Telemetry Service] Received Event:', JSON.stringify(event, null, 2));
+    if (Math.random() < LOG_SAMPLE_RATE) {
+        console.log('[Telemetry Service] Received Event:', JSON.stringify(event));
+    }
 
     res.status(202).send(); // Accepted
 });
