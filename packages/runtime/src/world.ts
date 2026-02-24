@@ -8,7 +8,7 @@ const CELL_SIZE = 120;
 const MAX_COLLIDERS = 2500;
 const RESCAN_THROTTLE_MS = 500;
 
-class SpatialGrid {
+export class SpatialGrid {
     // Map key "x,y" -> Set of collider IDs
     cells: Map<string, number[]> = new Map();
 
