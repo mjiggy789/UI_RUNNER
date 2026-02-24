@@ -34,10 +34,10 @@ const SEEK_TIMEOUT_REROUTE_EXTEND = 5.2;
 const SEEK_TIMEOUT_PROGRESS_VX = 85;
 const LOOP_WARN_STALL = 1.0;
 const LOOP_WARN_FLIPS = 6;
-const LOOP_DETECT_STALL = 1.6;
+const LOOP_DETECT_STALL = 1.4;
 const LOOP_DETECT_FLIPS = 10;
 const LOOP_RECOVERY_COOLDOWN = 2.5;
-const CEILING_BONK_WINDOW = 0.8;
+const CEILING_BONK_WINDOW = 1.2;
 const CEILING_BONK_REROUTE_HITS = 3;
 const CEILING_BONK_SUPPRESS_BASE = 0.3;
 const CEILING_BONK_SUPPRESS_STEP = 0.15;
@@ -346,6 +346,7 @@ export class Brain {
     ceilingBonkCount: number = 0;
     ceilingJumpSuppressTimer: number = 0;
     navSlipTimer: number = 0;
+    navSlipCount: number = 0;
     wallDecisionTimer: number = 0;
     ceilingEscapeTimer: number = 0;
     ceilingEscapeDir: -1 | 0 | 1 = 0;
@@ -566,6 +567,7 @@ export class Brain {
         this.takeoffZone = null;
         this.patienceTimer = 0;
         this.navSlipTimer = 0;
+        this.navSlipCount = 0;
         this.wallDecisionTimer = 0;
         this.ceilingEscapeTimer = 0;
         this.ceilingEscapeDir = 0;
@@ -694,6 +696,8 @@ export class Brain {
         this.navState = 'nav-align';
         this.takeoffZone = null;
         this.patienceTimer = 0;
+        this.navSlipTimer = 0;
+        this.navSlipCount = 0;
         this.takeoffCache.clear();
         this.breadcrumbStack = [];
 
@@ -1079,6 +1083,7 @@ export class Brain {
             this.maneuverStagnationTimer = 0;
             this.maneuverStartFeetY = pose.y + pose.height;
             this.maneuverCommitted = false;
+            this.navSlipCount = 0;
 
             // --- Backup & Charge Logic ---
             const needsSpeed = edge.action === 'jump-gap' || edge.action === 'jump-high';
@@ -1125,7 +1130,7 @@ export class Brain {
         }
 
         if (this.activeManeuver && this.maneuverCommitted && pose.groundedId === this.activeManeuverFromId) {
-            this.invalidateActiveManeuver(pose, 'missed-landing', 5000);
+            this.invalidateActiveManeuver(pose, 'missed-landing', 8000);
         }
 
         if (pose.groundedId === null) {
@@ -1231,6 +1236,7 @@ export class Brain {
         this.bestVerticalGain = Number.NEGATIVE_INFINITY;
         this.maneuverStagnationTimer = 0;
         this.maneuverCommitted = false;
+        this.navSlipCount = 0;
     }
 
     private resetShaftClimbState() {
@@ -1621,9 +1627,9 @@ export class Brain {
 
         const failureTag = 'progress-flat';
         if (this.activeManeuver && this.activeManeuverFromId !== null) {
-            this.invalidateActiveManeuver(pose, failureTag, 5000);
+            this.invalidateActiveManeuver(pose, failureTag, 8000);
         } else if (pose.groundedId !== null && this.targetPlatform) {
-            this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, failureTag, 5000);
+            this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, failureTag, 8000);
         }
 
         this.recordLog(
@@ -2152,9 +2158,9 @@ export class Brain {
                 // Do not abandon an active platform target; recover via reroute.
                 if (this.targetPlatform || this.getLockedTarget()) {
                     this.recordLog('ABORT_MOVE', pose, `${trajectoryFailure} -> reroute land=(${Math.round(prediction.landingX)},${Math.round(prediction.landingY)})`);
-                    this.invalidateActiveManeuver(pose, trajectoryFailure, 5000);
+                    this.invalidateActiveManeuver(pose, trajectoryFailure, 8000);
                     if (!this.activeManeuver && pose.groundedId !== null && this.targetPlatform) {
-                        this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, trajectoryFailure, 5000);
+                        this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, trajectoryFailure, 8000);
                     }
                     this.approachPhase = 'direct';
                     this.approachX = null;
@@ -2303,9 +2309,9 @@ export class Brain {
                             this.recordLog('NAV_APPROACH_FAIL', pose, 'timeout before takeoff zone');
                             this.takeoffCache.delete(this.targetPlatform.id);
                         }
-                        this.invalidateActiveManeuver(pose, 'seek-timeout', 5000);
+                        this.invalidateActiveManeuver(pose, 'seek-timeout', 8000);
                         if (!this.activeManeuver && pose.groundedId !== null && this.targetPlatform) {
-                            this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, 'seek-timeout', 5000);
+                            this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, 'seek-timeout', 8000);
                         }
                         this.bestProgressDist = Infinity;
                         this.progressStagnationTimer = 0;
@@ -2441,10 +2447,12 @@ export class Brain {
                                             this.executeLocalManeuver(pose, localEdge);
                                         } else {
                                             this.takeoffZone = null;
-                                            this.navState = 'nav-approach';
-                                            this.patienceTimer = 0.32;
-                                            this.markTargetUnreachable(pose.groundedId, this.targetPlatform.id);
                                             this.recordLog('NAV_ALIGN_FAIL', pose, `no feasible edge ID${pose.groundedId}->ID${this.targetPlatform.id}`);
+                                            this.invalidateActiveManeuver(pose, 'align-fail', 8000);
+                                            if (!this.activeManeuver && this.targetPlatform) {
+                                                this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, 'align-fail', 8000);
+                                            }
+                                            this.reroute(pose, 'align-fail');
                                         }
                                     }
                                 }
@@ -2488,6 +2496,13 @@ export class Brain {
                             if (outsideZone) {
                                 this.navSlipTimer += dt;
                                 if (this.navSlipTimer >= NAV_ZONE_SLIP_GRACE) {
+                                    this.navSlipCount++;
+                                    if (this.navSlipCount > 3) {
+                                        this.recordLog('NAV_SLIP_LOOP', pose, `count=${this.navSlipCount}`);
+                                        this.invalidateActiveManeuver(pose, 'slip-loop', 6000);
+                                        this.reroute(pose, 'slip-loop');
+                                        return input;
+                                    }
                                     this.navState = 'nav-approach';
                                     this.navSlipTimer = 0;
                                     this.recordLog('NAV_SLIP', pose, `fell out of tz`);
@@ -3224,9 +3239,9 @@ export class Brain {
                                     this.recordLog('NAV_APPROACH_FAIL', pose, 'stuck before takeoff zone');
                                     this.takeoffCache.delete(this.targetPlatform.id);
                                 }
-                                this.invalidateActiveManeuver(pose, 'stuck', 5000);
+                                this.invalidateActiveManeuver(pose, 'stuck', 8000);
                                 if (!this.activeManeuver && pose.groundedId !== null && this.targetPlatform) {
-                                    this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, 'stuck', 5000);
+                                    this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, 'stuck', 8000);
                                 }
                                 this.attemptBreadcrumbRecovery(pose, 'stuck');
                             }
@@ -3483,9 +3498,9 @@ export class Brain {
                             `ground=ID${groundedCollider.id} vy=${Math.round(pose.vy)} t=${this.dropIntentStuckTimer.toFixed(2)}`
                         );
                         if (this.targetPlatform) {
-                            this.graph.invalidateEdge(groundedCollider.id, this.targetPlatform.id, 'edge-drop-intent-stuck', 6000);
+                            this.graph.invalidateEdge(groundedCollider.id, this.targetPlatform.id, 'edge-drop-intent-stuck', 8000);
                         }
-                        this.invalidateActiveManeuver(pose, 'edge-drop-intent-stuck', 6000);
+                        this.invalidateActiveManeuver(pose, 'edge-drop-intent-stuck', 8000);
                         this.resetManeuverTracking();
                         this.dropEdgeX = null;
                         this.dropGroundId = null;
@@ -3508,9 +3523,9 @@ export class Brain {
                     if (this.progressStagnationTimer > 2.5) {
                         this.recordLog('EDGE_DROP_FAIL', pose, `blocked by wall at edge ID${groundedCollider.id}`);
                         if (this.targetPlatform) {
-                            this.graph.invalidateEdge(groundedCollider.id, this.targetPlatform.id, 'edge-drop-blocked', 5000);
+                            this.graph.invalidateEdge(groundedCollider.id, this.targetPlatform.id, 'edge-drop-blocked', 8000);
                         }
-                        this.invalidateActiveManeuver(pose, 'edge-drop-blocked');
+                        this.invalidateActiveManeuver(pose, 'edge-drop-blocked', 8000);
                         this.resetManeuverTracking(); // Force re-evaluation
                     }
                 }
@@ -4290,9 +4305,9 @@ export class Brain {
                     phase: this.approachPhase
                 }
             }));
-            this.invalidateActiveManeuver(pose, 'ping-pong', 5000);
+            this.invalidateActiveManeuver(pose, 'ping-pong', 8000);
             if (!this.activeManeuver && pose.groundedId !== null && this.targetPlatform) {
-                this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, 'ping-pong', 5000);
+                this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, 'ping-pong', 8000);
             }
             this.loopCooldown = LOOP_RECOVERY_COOLDOWN;
             this.stallTimer = 0;
