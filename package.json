@@ -12,7 +12,8 @@
         "predev:full": "lsof -ti :3000,3001,3002 | xargs kill -9 || true",
         "dev:full": "npm run build && concurrently --kill-others \"npx serve -l 3000 release\" \"npx ts-node services/config-api/src/index.ts\" \"npx ts-node services/telemetry/src/index.ts\"",
         "test:checksum": "npx ts-node scripts/test-world-checksum.ts",
-        "test": "npm run test:checksum"
+        "test:spatial": "npx ts-node scripts/test-spatial-grid.ts",
+        "test": "npm run test:checksum && npm run test:spatial"
     },
     "devDependencies": {
         "@types/node": "^25.2.3",
