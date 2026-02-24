@@ -746,6 +746,7 @@ export class Brain {
     private clearTargetLock() {
         this.lockedTargetId = null;
         this.isDetourActive = false;
+        this.lockFailCount = 0;
     }
 
     private manualLogPose(x: number, y: number): Pose {
@@ -880,7 +881,6 @@ export class Brain {
             this.targetX = this.getPlatformAimX(platform, referenceX);
         }
         this.autoTargetY = null;
-        this.lockFailCount = 0;
     }
 
     private isSteerDirectionBlocked(pose: Pose, dir: -1 | 1): boolean {
@@ -1007,6 +1007,12 @@ export class Brain {
         return reason === 'gap-jump'
             || reason === 'drop-through'
             || reason === 'intermediate-edge-hop'
+            || reason === 'stuck-recovery-hop'
+            || reason === 'edge-drop-wall-hop'
+            || reason === 'wall-bang-hop'
+            || reason === 'idle-wall-slide-kickoff'
+            || reason === 'shaft-climb-kickoff'
+            || reason === 'wall-step-launch'
             || reason.startsWith('offscreen');
     }
 
@@ -1035,8 +1041,10 @@ export class Brain {
 
         const landingBand = this.getActiveLandingBand();
         if (!landingBand) return true;
-        const landingMid = (landingBand.minX + landingBand.maxX) / 2;
-        return this.world.hasLineOfSight(botCenterX, botFeetY - 26, landingMid, landingBand.y - 8);
+        // The planner already validated Line of Sight for this jump during graph construction.
+        // We do not re-check LOS dynamically here because the bot's micro-position may slightly disagree
+        // with the planner's sampled takeoff point, causing permanent stalls instead of attempting the jump.
+        return true;
     }
 
     private setActiveManeuver(edge: NavEdge | null, fromId: number | null, pose: Pose) {
@@ -2263,13 +2271,21 @@ export class Brain {
                     this.fsmStagnationTimer = 0;
                 }
 
+                const nearTarget = targetY !== null
+                    && Math.abs(targetDx) < SEEK_TIMEOUT_NEAR_DX
+                    && targetDy !== null
+                    && Math.abs(targetDy) < SEEK_TIMEOUT_NEAR_DY;
+                const hasVxProgress = Math.abs(pose.vx) > SEEK_TIMEOUT_PROGRESS_VX;
+
+                let timeoutLimit = 4.5;
+                if (nearTarget) timeoutLimit += SEEK_TIMEOUT_NEAR_EXTEND;
+                if (hasVxProgress) timeoutLimit += SEEK_TIMEOUT_PROGRESS_EXTEND;
+                if (this.isDetourActive) timeoutLimit += SEEK_TIMEOUT_REROUTE_EXTEND;
+                timeoutLimit += this.retryCount * SEEK_TIMEOUT_RETRY_GRACE;
+
                 // Eject if stagnant for too long (Progress Metric Timeout OR FSM Stagnation)
-                if (this.progressStagnationTimer > 4.5 || this.fsmStagnationTimer > 4.5) {
-                    const reason = this.progressStagnationTimer > 4.5 ? 'progress-stagnation' : 'fsm-stagnation';
-                    const nearTarget = targetY !== null
-                        && Math.abs(targetDx) < SEEK_TIMEOUT_NEAR_DX
-                        && targetDy !== null
-                        && Math.abs(targetDy) < SEEK_TIMEOUT_NEAR_DY;
+                if (this.progressStagnationTimer > timeoutLimit || this.fsmStagnationTimer > timeoutLimit) {
+                    const reason = this.progressStagnationTimer > timeoutLimit ? 'progress-stagnation' : 'fsm-stagnation';
 
                     if (this.manualMode && this.retryCount < 3) {
                         this.retryCount++;
@@ -2479,10 +2495,6 @@ export class Brain {
                             } else {
                                 this.navSlipTimer = 0;
                                 const landingBand = this.getActiveLandingBand();
-                                const landingMid = landingBand ? (landingBand.minX + landingBand.maxX) / 2 : targetX;
-                                const launchLOS = landingMid !== null
-                                    ? this.world.hasLineOfSight(botCenterX, botFeetY - 26, landingMid, (landingBand?.y ?? targetY) - 8)
-                                    : true;
                                 const launchHeadProbe: AABB = {
                                     x1: pose.x + 2,
                                     y1: pose.y - 44,
@@ -2497,7 +2509,9 @@ export class Brain {
 
                                 if (isChargingAtSpeed) {
                                     this.patienceTimer = 0;
-                                } else if (Math.abs(pose.vx) < 50 && launchLOS && !launchHeadBlocked) {
+                                    // We do not require dynamic LOS here, only that the head is clear and we are settled.
+                                    // If the jump fails physically, edge invalidation correctly blacklists the path.
+                                } else if (Math.abs(pose.vx) < 50 && !launchHeadBlocked) {
                                     this.patienceTimer -= dt;
                                 } else {
                                     this.patienceTimer = Math.max(this.patienceTimer, 0.08);
@@ -3060,7 +3074,7 @@ export class Brain {
                     const touchHit = overlapX > 5 && overlapY > 5;
                     isOnTargetPlatform = groundedHit || touchHit;
                 }
-                if (isOnTargetPlatform) {
+                if (isOnTargetPlatform && (this.lockedTargetId === null || this.targetPlatform?.id === this.lockedTargetId)) {
                     this.lockFailCount = 0;
                 }
                 // Manual targets: bot center proximity, no grounded requirement
@@ -3668,7 +3682,7 @@ export class Brain {
 
     private buildLoopSignature(pose: Pose, failReason: string): string {
         const platformId = pose.groundedId ?? -1;
-        const targetId = this.targetPlatform?.id ?? this.lockedTargetId ?? -1;
+        const targetId = this.lockedTargetId !== null ? this.lockedTargetId : (this.targetPlatform?.id ?? -1);
         const state = this.currentState === 'seek' ? this.navState : this.currentState;
         const edgeId = this.activeManeuver
             ? `${this.activeManeuverFromId ?? '?'}>${this.activeManeuver.toId}:${this.activeManeuver.action}`
@@ -4224,7 +4238,7 @@ export class Brain {
         const loopDetected =
             this.loopCooldown <= 0 &&
             ((this.stallTimer > LOOP_DETECT_STALL && this.facingFlipCount >= LOOP_DETECT_FLIPS) ||
-            this.facingFlipCount > 12);
+                this.facingFlipCount > 12);
         if (loopDetected) {
             this.lockFailCount++;
             if (this.lockFailCount >= 4 && this.lockedTargetId !== null) {

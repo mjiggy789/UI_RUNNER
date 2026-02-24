@@ -241,18 +241,18 @@ export class World {
         const dist = Math.hypot(dx, dy);
         if (dist === 0) return true;
 
-        const steps = Math.ceil(dist / 35); // Check every ~35px
+        const steps = Math.ceil(dist / 12); // Check every ~12px for high precision
         for (let i = 1; i < steps; i++) {
             const t = i / steps;
             const px = x1 + dx * t;
             const py = y1 + dy * t;
 
-            // Small point query (5x5 box)
+            // Small point query (14x14 box to catch thin elements safely)
             const colliding = this.query({
-                x1: px - 5,
-                y1: py - 5,
-                x2: px + 5,
-                y2: py + 5
+                x1: px - 7,
+                y1: py - 7,
+                x2: px + 7,
+                y2: py + 7
             });
 
             // If we hit any solid rectangular obstacle (not one-way), LOS is broken

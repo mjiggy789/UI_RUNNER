@@ -169,7 +169,7 @@ On each frame (`brain.think()`), decisions happen in this sequence:
 ### Decision: Progress stagnation timeout
 - Trigger:
   - seek pressure active and not in `nav-ready`
-  - `progressStagnationTimer > 4.5s`
+  - `progressStagnationTimer > timeoutLimit` (dynamic window: base 4.5s + extensions for proximity, velocity, and reroutes)
 - Logic:
   - manual mode: extend timer only
   - auto mode: increment retry, invalidate edge, breadcrumb recovery/reroute
@@ -454,11 +454,13 @@ On each frame (`brain.think()`), decisions happen in this sequence:
 
 ### Decision: Glitch loop detection and reroute
 - Trigger:
-  - grounded, low movement while trying, repeated facing flips
+  - logic: uses a **stable signature** keyed to the final locked target ID (prevents reroute fragmentation)
   - warning threshold: stall > `1.0s` and flips >= `3`
   - detect threshold: stall > `1.6s` and flips >= `5`
 - Logic:
-  - record warning, then reroute and start cooldown (`2.5s`)
+  - record incident against signature, increment `lockFailCount`, then reroute.
+  - `LOCK_GIVE_UP`: if total `lockFailCount` (accumulated across reroutes) reaches 4, abandon target.
+  - cooldown period: `2.5s`
 - Example:
   - target nearly above causes left-right pingpong near centerline => `GLITCH_LOOP`
 - Evidence:

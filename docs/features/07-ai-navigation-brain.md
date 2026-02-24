@@ -26,7 +26,7 @@ Generate movement intent to autonomously traverse complex DOM geometry.
 - Air tuck decisioning to compress height while airborne under low overhead clearance.
 
 ## Recovery and anti-loop systems
-- Progress stagnation timer based on real distance improvement.
+- Dynamic progress stagnation timer (base 4.5s + extensions for proximity and progress).
 - Facing-flip and stall diagnostics for ping-pong detection.
 - Temporary edge invalidation on failed transitions.
 - Breadcrumb-based rewind to known-good platforms.

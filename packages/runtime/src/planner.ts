@@ -31,8 +31,8 @@ const BALLISTIC_LANDING_DEPTH = 240;
 const LANDING_MARGIN_MIN = 6;
 const LANDING_MARGIN_MAX = 12;
 const EDGE_BACKOFF_BASE_MS = 5000;
-const EDGE_BACKOFF_MULTIPLIER = 3;
-const EDGE_BACKOFF_MAX_MS = 180000;
+const EDGE_BACKOFF_MULTIPLIER = 1.5;
+const EDGE_BACKOFF_MAX_MS = 60000;
 const EDGE_BACKOFF_DECAY_MS = 45000;
 const EDGE_BACKOFF_MAX_STRIKES = 7;
 
@@ -582,7 +582,7 @@ export class NavGraph {
         const linkBackoff = this.computeBackoffDuration(linkKey, reason, durationMs, now);
 
         // Escalation: if the link has failed repeatedly, invalidate ALL edges between these nodes.
-        if (linkBackoff.strikes >= 3) {
+        if (linkBackoff.strikes >= 5) {
             const edges = node.edges.filter((e) => e.toId === toId);
             if (edges.length > 0) {
                 for (const edge of edges) {
