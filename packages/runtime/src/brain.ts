@@ -122,7 +122,7 @@ const BREADCRUMB_COST_BASE = 48;
 const BREADCRUMB_COST_STEP = 12;
 const BREADCRUMB_COST_MAX = 170;
 const LOOP_SIGNATURE_WINDOW_MS = 60000;
-const LOOP_SIGNATURE_ESCALATE_COUNT = 5;
+const LOOP_SIGNATURE_ESCALATE_COUNT = 3;
 const LOOP_FALLBACK_IDLE_MIN = 0.22;
 const LOOP_FALLBACK_IDLE_MAX = 0.45;
 const WORLD_CHECKSUM_COLLIDER_TOL = 2;
@@ -395,6 +395,7 @@ export class Brain {
     isDetourActive: boolean = false;
     panicLatchTimer: number = 0;
     private recentUnreachable: Map<number, { targetId: number; time: number }[]> = new Map();
+    private ticTacCooldowns: Map<string, number> = new Map();
 
     // --- State Machine ---
     navState: 'nav-align' | 'nav-approach' | 'nav-ready' | 'nav-commit' | 'nav-recovery' = 'nav-align';
@@ -1378,6 +1379,14 @@ export class Brain {
         const corridor = this.measureCorridor(pose);
         if (!corridor) return null;
         if (corridor.width < TIC_TAC_MIN_GAP_WIDTH || corridor.width > TIC_TAC_MAX_GAP_WIDTH) return null;
+
+        const key = `${Math.round(corridor.leftWallX)}:${Math.round(corridor.rightWallX)}`;
+        if (this.ticTacCooldowns.has(key)) {
+            if (performance.now() < this.ticTacCooldowns.get(key)!) {
+                return null;
+            }
+            this.ticTacCooldowns.delete(key);
+        }
         return corridor;
     }
 
@@ -1653,6 +1662,7 @@ export class Brain {
         this.resetProgressTracking();
         this.resetShaftClimbState();
         this.resetDropIntentTracking();
+        this.ticTacCooldowns.clear();
     }
 
     private getBodyForm(pose: Pose): string {
@@ -2703,6 +2713,10 @@ export class Brain {
 
                     if (this.ticTacStallTimer > 1.2) {
                         this.recordLog('TIC_TAC_STALL', pose, `y=${Math.round(pose.y)} h=${Math.round(heightDiff)}`);
+                        if (ticTacCorridor) {
+                            const key = `${Math.round(ticTacCorridor.leftWallX)}:${Math.round(ticTacCorridor.rightWallX)}`;
+                            this.ticTacCooldowns.set(key, performance.now() + 3000);
+                        }
                         this.resetTicTacState();
                         ticTacHandled = false;
                     }

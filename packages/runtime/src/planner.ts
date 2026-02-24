@@ -576,10 +576,29 @@ export class NavGraph {
         if (!node) return;
 
         const now = performance.now();
-        const edgeKey = this.getEdgeBackoffKey(fromId, toId, maneuverId);
-        const backoff = this.computeBackoffDuration(edgeKey, reason, durationMs, now);
+
+        // Always track failures on the general link to detect pattern failures
+        const linkKey = this.getEdgeBackoffKey(fromId, toId);
+        const linkBackoff = this.computeBackoffDuration(linkKey, reason, durationMs, now);
+
+        // Escalation: if the link has failed repeatedly, invalidate ALL edges between these nodes.
+        if (linkBackoff.strikes >= 3) {
+            const edges = node.edges.filter((e) => e.toId === toId);
+            if (edges.length > 0) {
+                for (const edge of edges) {
+                    edge.invalidUntil = Math.max(edge.invalidUntil, now + linkBackoff.durationMs);
+                    edge.failureReason = `${reason}:link-escalation:x${linkBackoff.strikes}`;
+                }
+                return;
+            }
+        }
+
         let edge: NavEdge | undefined;
+        let backoff = linkBackoff;
+
         if (maneuverId) {
+            const maneuverKey = this.getEdgeBackoffKey(fromId, toId, maneuverId);
+            backoff = this.computeBackoffDuration(maneuverKey, reason, durationMs, now);
             edge = node.edges.find((e) => e.toId === toId && e.maneuverId === maneuverId);
         } else {
             edge = node.edges
