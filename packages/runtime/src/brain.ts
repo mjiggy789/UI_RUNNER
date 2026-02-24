@@ -393,6 +393,7 @@ export class Brain {
     localSolver: LocalSolver;
     detourPlanner: DetourPlanner;
     isDetourActive: boolean = false;
+    panicLatchTimer: number = 0;
     private recentUnreachable: Map<number, { targetId: number; time: number }[]> = new Map();
 
     // --- State Machine ---
@@ -1922,6 +1923,7 @@ export class Brain {
         this.sanitizeAutoTargetToPlatform(pose);
 
         if (this.moveCommitTimer > 0) this.moveCommitTimer -= dt;
+        if (this.panicLatchTimer > 0) this.panicLatchTimer -= dt;
         if (this.dropLockTimer > 0) this.dropLockTimer -= dt;
         if (this.progressResetCooldown > 0) this.progressResetCooldown -= dt;
         if (this.worldChecksumReplanCooldown > 0) this.worldChecksumReplanCooldown -= dt;
@@ -2788,6 +2790,11 @@ export class Brain {
                 }
 
                 // Final Horizontal Movement
+                const isPanicState = this.facingFlipCount > 4 || pose.state === 'slide' || pose.state === 'wall-slide' || pose.state === 'climb';
+                if (isPanicState) {
+                    this.panicLatchTimer = 0.6;
+                }
+
                 debugSnapshot.navTargetX = navTargetX;
                 const moveDx = navTargetX - botCenterX;
                 debugSnapshot.moveDx = moveDx;
@@ -2828,11 +2835,24 @@ export class Brain {
                             moveDir = this.moveCommitDir;
                         } else if (moveDir !== this.moveCommitDir) {
                             this.moveCommitDir = moveDir;
-                            const nextCommit = nearAndLevel ? STEER_COMMIT_HOLD_NEAR : STEER_COMMIT_HOLD_BASE;
+                            let nextCommit = nearAndLevel ? STEER_COMMIT_HOLD_NEAR : STEER_COMMIT_HOLD_BASE;
+                            if (this.panicLatchTimer > 0) {
+                                nextCommit = Math.max(nextCommit, 0.3);
+                            }
                             this.moveCommitTimer = Math.max(this.moveCommitTimer, nextCommit);
                         }
                     } else if (this.moveCommitTimer <= 0) {
                         this.moveCommitDir = 0;
+                    }
+
+                    if (this.panicLatchTimer > 0 && pose.grounded && pose.groundedId !== null) {
+                        const currentNode = this.graph.nodes.get(pose.groundedId);
+                        const hasExits = currentNode && currentNode.edges.some(e => e.invalidUntil <= performance.now());
+                        if (!hasExits) {
+                            moveDir = 0;
+                            this.moveCommitDir = 0;
+                            this.moveCommitTimer = 0;
+                        }
                     }
 
                     if (moveDir > 0) input.right = true;
@@ -3673,7 +3693,7 @@ export class Brain {
             }
         }
 
-        const primeFallbackTarget = (pick: Collider, mode: 'local-random' | 'global-nearest' | 'local-reachable' | 'local-reachable-biased') => {
+        const primeFallbackTarget = (pick: Collider, mode: 'local-random' | 'global-nearest' | 'local-reachable' | 'local-reachable-biased' | 'mainland-anchor') => {
             this.lockedTargetId = pick.id;
             this.setStationaryPlatformTarget(pick, botCx, true);
             this.resetManeuverTracking();
@@ -3716,16 +3736,48 @@ export class Brain {
             return true;
         });
 
+        // Strict pool empty? Try Mainland (Graph-connected, Far)
         if (pool.length === 0) {
-            this.recordLog('LOOP_FALLBACK', pose, `strict pool empty, relaxing exclusions (allow recent warps)`);
-            pool = this.world.query(searchAABB).filter((c) => {
+            const global = this.world.getAll();
+            const candidates = global.filter(c => {
                 if (c.kind !== 'rect' || !c.flags.solid) return false;
                 if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
                 if (this.targetPlatform && c.id === this.targetPlatform.id) return false;
                 if (pose.grounded && pose.groundedId === c.id) return false;
-                // Allow recentWarpDestinations here as last resort
-                return true;
+                if (this.recentWarpDestinations.includes(c.id)) return false;
+
+                // Connectivity check: must have outgoing edges (not a dead end)
+                if (!this.graph.nodes.has(c.id)) return false;
+                const node = this.graph.nodes.get(c.id);
+                return node && node.edges.some(e => e.invalidUntil <= performance.now());
             });
+
+            if (candidates.length > 0) {
+                candidates.sort((a, b) => {
+                    const distA = Math.hypot(((a.aabb.x1 + a.aabb.x2) / 2) - botCx, a.aabb.y1 - botFeetY);
+                    const distB = Math.hypot(((b.aabb.x1 + b.aabb.x2) / 2) - botCx, b.aabb.y1 - botFeetY);
+                    return distB - distA;
+                });
+                const topCount = Math.min(3, candidates.length);
+                const pick = candidates[Math.floor(Math.random() * topCount)];
+                primeFallbackTarget(pick, 'mainland-anchor');
+                return;
+            }
+
+            // Mainland Empty? Force Nuclear Option (bypass cooldown)
+            if (this.tryPickCoordinateTarget(pose, this.world.getAll(), true, true)) {
+                this.recordLog('LOOP_FALLBACK', pose, `sig=${signature} ${reason}: forced non-local coord (mainland empty)`);
+                window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
+                    detail: {
+                        type: 'loop_fallback',
+                        reason,
+                        mode: 'coordinate',
+                        targetX: this.targetX,
+                        targetY: this.autoTargetY
+                    }
+                }));
+                return;
+            }
         }
 
         const idleTime = LOOP_FALLBACK_IDLE_MIN + Math.random() * (LOOP_FALLBACK_IDLE_MAX - LOOP_FALLBACK_IDLE_MIN);
@@ -3753,7 +3805,7 @@ export class Brain {
         }
 
         // If reachable set is empty, escalate to non-local escape strategy
-        if (this.tryPickCoordinateTarget(pose, this.world.getAll(), true)) {
+        if (this.tryPickCoordinateTarget(pose, this.world.getAll(), true, true)) {
             this.recordLog('LOOP_FALLBACK', pose, `sig=${signature} ${reason}: escalated to non-local coord`);
             window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
                 detail: {
@@ -3931,9 +3983,9 @@ export class Brain {
         return blocked;
     }
 
-    private tryPickCoordinateTarget(pose: Pose, candidates: Collider[], preferFar: boolean): boolean {
+    private tryPickCoordinateTarget(pose: Pose, candidates: Collider[], preferFar: boolean, force: boolean = false): boolean {
         if (candidates.length === 0) return false;
-        if (performance.now() - this.lastCoordinateFallbackTime < 8000) return false;
+        if (!force && performance.now() - this.lastCoordinateFallbackTime < 8000) return false;
 
         const botCx = pose.x + pose.width / 2;
         const botFeetY = pose.y + pose.height;
@@ -4007,6 +4059,9 @@ export class Brain {
             this.breadcrumbStack = [];
 
             this.lastCoordinateFallbackTime = performance.now();
+            // Force commitment to this recovery mode (suppress retargeting)
+            this.targetSelectFreezeTimer = 2.0;
+
             this.resetManeuverTracking();
             this.resetShaftClimbState();
             this.resetTicTacState();
@@ -4350,6 +4405,14 @@ export class Brain {
         // --- GRAPH REACHABILITY FILTER ---
         const startId = this.getPlanningStartId(pose);
         if (startId !== null && this.graph.nodes.has(startId)) {
+            const node = this.graph.nodes.get(startId);
+            const hasExits = node && node.edges.some(e => e.invalidUntil <= performance.now());
+            if (!hasExits) {
+                this.recordLog('ISLAND_PANIC', pose, `ID${startId} has no valid exits`);
+                this.triggerLoopHardFallback(pose, `island-panic-ID${startId}`, 'island-panic');
+                return;
+            }
+
             const reachableNow = scoringPool.filter((c) =>
                 this.findPathWithContext(startId, c.id, pose, false, 160) !== null
             );
