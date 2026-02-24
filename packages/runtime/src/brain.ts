@@ -1,6 +1,7 @@
 import { Pose } from './controller';
 import { World } from './world';
 import { LocalSolver } from './local-solver';
+import { DetourPlanner } from './detour-planner';
 import type { WorldChecksum } from './world-checksum';
 import { NavGraph, NavEdge, PlannerContext, NavPathResult } from './planner';
 import { Collider, AABB } from '@parkour-bot/shared';
@@ -390,6 +391,8 @@ export class Brain {
     lockFailCount: number = 0;
     lastCoordinateFallbackTime: number = 0;
     localSolver: LocalSolver;
+    detourPlanner: DetourPlanner;
+    isDetourActive: boolean = false;
     private recentUnreachable: Map<number, { targetId: number; time: number }[]> = new Map();
 
     // --- State Machine ---
@@ -488,6 +491,7 @@ export class Brain {
         this.world = world;
         this.graph = new NavGraph(world);
         this.localSolver = new LocalSolver(world, this.graph);
+        this.detourPlanner = new DetourPlanner(world, this.graph, this.localSolver);
         this.worldRevisionSeen = world.getRevision();
         this.worldChecksumSeen = world.getChecksum();
         this.resetWorldChecksumDriftTracking();
@@ -657,6 +661,7 @@ export class Brain {
         this.targetX = null;
         this.isFirstTarget = true;
         this.clearTargetLock();
+        this.isDetourActive = false;
 
         this.bestProgressDist = Infinity;
         this.progressStagnationTimer = 0;
@@ -738,6 +743,7 @@ export class Brain {
 
     private clearTargetLock() {
         this.lockedTargetId = null;
+        this.isDetourActive = false;
     }
 
     private manualLogPose(x: number, y: number): Pose {
@@ -939,7 +945,7 @@ export class Brain {
         }
     }
 
-    private getPlannerContext(pose: Pose, relaxed: boolean = false): PlannerContext {
+    public getPlannerContext(pose: Pose, relaxed: boolean = false): PlannerContext {
         return {
             jumpReady: relaxed ? true : (this.jumpCooldown <= 0.02 || !pose.grounded),
             airJumpsAvailable: relaxed ? (MAX_TOTAL_JUMPS - 1) : Math.max(0, MAX_TOTAL_JUMPS - pose.jumps),
@@ -3028,6 +3034,7 @@ export class Brain {
                 const isNearManualTarget = !this.targetPlatform && targetY !== null && Math.abs(targetX - botCenterX) <= 15 && Math.abs(botCenterY - targetY) <= 15;
 
                 if (isOnTargetPlatform || isNearManualTarget) {
+                    this.isDetourActive = false;
                     this.recordLog('ARRIVED', pose, isOnTargetPlatform ? `platform ID:${this.targetPlatform!.id}` : 'coord match');
                     const arrivedId = this.targetPlatform ? this.targetPlatform.id : null;
                     this.lastHitId = arrivedId;
@@ -3638,6 +3645,34 @@ export class Brain {
     private triggerLoopHardFallback(pose: Pose, signature: string, reason: string) {
         const botCx = pose.x + pose.width / 2;
         const botFeetY = pose.y + pose.height;
+
+        // Detour Planner Hook (Loop Recovery)
+        const locked = this.getLockedTarget();
+        const detour = this.detourPlanner.getDetour(pose, locked, this.targetPlatform, this.getPlannerContext(pose), [reason]);
+        if (detour) {
+            this.recordLog('DETOUR_PLAN', pose, `${reason}: ${detour.type} ${detour.reason} (loop-fallback)`);
+            this.isDetourActive = true;
+
+            if (detour.type === 'maneuver' && detour.edge) {
+                this.executeLocalManeuver(pose, detour.edge);
+                return;
+            } else if (detour.type === 'waypoint' && detour.target && 'id' in detour.target) {
+                if (locked) {
+                    this.setSubTargetWaypoint(pose, detour.target as Collider, locked, reason, 'detour-loop');
+                } else {
+                    this.setStationaryPlatformTarget(detour.target as Collider, pose.x + pose.width / 2, true);
+                    this.currentState = 'seek';
+                    this.navState = 'nav-align';
+                    // We successfully found a detour, so we can treat this as "progress" but
+                    // we retain some pressure counters if needed. For loop recovery, resetting local stagnation is fine.
+                    this.bestProgressDist = Infinity;
+                    this.progressStagnationTimer = 0;
+                    this.fsmStagnationTimer = 0;
+                }
+                return;
+            }
+        }
+
         const primeFallbackTarget = (pick: Collider, mode: 'local-random' | 'global-nearest' | 'local-reachable' | 'local-reachable-biased') => {
             this.lockedTargetId = pick.id;
             this.setStationaryPlatformTarget(pick, botCx, true);
@@ -4191,6 +4226,7 @@ export class Brain {
     }
 
     private pickNewTarget(pose: Pose) {
+        this.isDetourActive = false;
         const hasCommittedTarget =
             this.lockedTargetId !== null
             || this.targetPlatform !== null
@@ -4653,6 +4689,31 @@ export class Brain {
     private reroute(pose: Pose, reason: string = 'recovery') {
         if (this.trackLoopIncident(pose, reason)) return;
         const locked = this.getLockedTarget();
+
+        // Detour Planner Hook
+        const detour = this.detourPlanner.getDetour(pose, locked, this.targetPlatform, this.getPlannerContext(pose), [reason]);
+        if (detour) {
+            this.recordLog('DETOUR_PLAN', pose, `${reason}: ${detour.type} ${detour.reason}`);
+            this.isDetourActive = true;
+
+            if (detour.type === 'maneuver' && detour.edge) {
+                this.executeLocalManeuver(pose, detour.edge);
+                return;
+            } else if (detour.type === 'waypoint' && detour.target && 'id' in detour.target) {
+                if (locked) {
+                    this.setSubTargetWaypoint(pose, detour.target as Collider, locked, reason, 'detour');
+                } else {
+                    this.setStationaryPlatformTarget(detour.target as Collider, pose.x + pose.width / 2, true);
+                    this.currentState = 'seek';
+                    this.navState = 'nav-align';
+                    this.bestProgressDist = Infinity;
+                    this.progressStagnationTimer = 0;
+                    this.fsmStagnationTimer = 0;
+                }
+                return;
+            }
+        }
+
         const startId = this.getPlanningStartId(pose);
 
         if (locked && startId !== null && this.graph.nodes.has(startId)) {
