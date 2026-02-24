@@ -577,30 +577,73 @@ export class NavGraph {
 
         const now = performance.now();
 
+        // Only trigger link-level escalation for execution failures, not soft invalidations
+        const isSoftInvalidation = reason.includes('breadcrumb') || reason.includes('checksum') || reason.includes('progress-flat');
+
         // Always track failures on the general link to detect pattern failures
         const linkKey = this.getEdgeBackoffKey(fromId, toId);
-        const linkBackoff = this.computeBackoffDuration(linkKey, reason, durationMs, now);
 
-        // Escalation: if the link has failed repeatedly, invalidate ALL edges between these nodes.
-        if (linkBackoff.strikes >= 3) {
-            const edges = node.edges.filter((e) => e.toId === toId);
-            if (edges.length > 0) {
-                for (const edge of edges) {
-                    edge.invalidUntil = Math.max(edge.invalidUntil, now + linkBackoff.durationMs);
-                    edge.failureReason = `${reason}:link-escalation:x${linkBackoff.strikes}`;
+        // If soft, we don't update strikes on the link, but we still calculate duration if needed?
+        // Actually, we should probably not use linkBackoff for soft reasons at all to avoid polluting the strike count.
+        // But we might still want to invalidate specific edges.
+
+        let linkBackoff: { durationMs: number; strikes: number; category: string } | null = null;
+        if (!isSoftInvalidation) {
+            linkBackoff = this.computeBackoffDuration(linkKey, reason, durationMs, now);
+
+            // Escalation: if the link has failed repeatedly, invalidate ALL edges between these nodes.
+            if (linkBackoff.strikes >= 3) {
+                const edges = node.edges.filter((e) => e.toId === toId);
+                if (edges.length > 0) {
+                    for (const edge of edges) {
+                        edge.invalidUntil = Math.max(edge.invalidUntil, now + linkBackoff.durationMs);
+                        edge.failureReason = `${reason}:link-escalation:x${linkBackoff.strikes}`;
+                    }
+                    return;
                 }
-                return;
             }
         }
 
         let edge: NavEdge | undefined;
-        let backoff = linkBackoff;
+        let backoff: { durationMs: number; strikes: number; category: string };
 
         if (maneuverId) {
             const maneuverKey = this.getEdgeBackoffKey(fromId, toId, maneuverId);
             backoff = this.computeBackoffDuration(maneuverKey, reason, durationMs, now);
             edge = node.edges.find((e) => e.toId === toId && e.maneuverId === maneuverId);
         } else {
+            // Fallback: if no maneuverId, use linkBackoff if available, or compute a one-off without strikes?
+            // Existing logic implied single edge invalidation.
+            // If soft invalidation and no maneuverId (rare?), we still need a backoff.
+            if (linkBackoff) {
+                backoff = linkBackoff;
+            } else {
+                // Soft invalidation without maneuver ID (e.g. breadcrumb cost applying to a target generally?)
+                // We just compute it for the link key but maybe don't want to increment strikes?
+                // computeBackoffDuration updates state side-effect.
+                // For safety, let's use the link key but we accept that soft invalidations might increment strikes
+                // if we don't change computeBackoffDuration.
+                // Better: use a temporary key or just accept that "soft" means "don't ESCALATE", but "do BACKOFF".
+                // But we wanted to avoid "ratchet strikes".
+                // Let's use maneuverKey-style logic even if maneuverId is missing? No.
+                // Let's just use the standard computation but acknowledge the side effect for now,
+                // as the critical fix is preventing the *escalation* block above.
+                // However, user said "non-execution invalidations can also ratchet strikes and over-ban".
+                // So we really shouldn't call computeBackoffDuration(linkKey) for soft reasons if it side-effects.
+
+                // Let's rely on the maneuver-specific backoff if maneuverId is present.
+                // If maneuverId is NOT present, we usually want to invalidate the best edge.
+                // For breadcrumb pops, we usually just want to penalize cost, not strictly "backoff".
+                // But invalidateEdge is used for penalties too.
+
+                // Construct a dummy backoff for soft reasons if we skipped linkBackoff
+                backoff = {
+                    durationMs: durationMs,
+                    strikes: 1,
+                    category: 'soft'
+                };
+            }
+
             edge = node.edges
                 .filter((e) => e.toId === toId)
                 .sort((a, b) => a.cost - b.cost)[0];

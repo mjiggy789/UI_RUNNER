@@ -1,11 +1,11 @@
 
 import { SpatialGrid } from '../packages/runtime/src/world';
-import { AABB } from '@parkour-bot/shared';
+import { AABB } from '../packages/shared/src/index';
 
 function check(condition: boolean, message: string) {
     if (!condition) {
         console.error(`FAILED: ${message}`);
-        process.exit(1);
+        throw new Error(message);
     }
 }
 
