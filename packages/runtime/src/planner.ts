@@ -32,7 +32,7 @@ const LANDING_MARGIN_MIN = 6;
 const LANDING_MARGIN_MAX = 12;
 const EDGE_BACKOFF_BASE_MS = 5000;
 const EDGE_BACKOFF_MULTIPLIER = 1.5;
-const EDGE_BACKOFF_MAX_MS = 60000;
+const EDGE_BACKOFF_MAX_MS = 8000;
 const EDGE_BACKOFF_DECAY_MS = 45000;
 const EDGE_BACKOFF_MAX_STRIKES = 7;
 
@@ -280,8 +280,8 @@ export class NavGraph {
         const toCenterX = (to.aabb.x1 + to.aabb.x2) / 2;
         const facing: -1 | 1 = toCenterX >= fromCenterX ? 1 : -1;
         const edgeAnchor = facing > 0 ? fromMaxX : fromMinX;
-        const takeoffMin = Math.max(fromMinX, edgeAnchor + (facing > 0 ? -58 : -8));
-        const takeoffMax = Math.min(fromMaxX, edgeAnchor + (facing > 0 ? 8 : 58));
+        const takeoffMin = Math.max(fromMinX, edgeAnchor + (facing > 0 ? -320 : -8));
+        const takeoffMax = Math.min(fromMaxX, edgeAnchor + (facing > 0 ? 8 : 320));
         if (takeoffMin >= takeoffMax) return null;
 
         const takeoffY = from.aabb.y1 - 6;
@@ -510,7 +510,7 @@ export class NavGraph {
         const cy = c.aabb.y1;
         const dx = Math.abs(cx - tx);
         const dy = cy - ty;
-        return dx + (dy > 0 ? dy * 3 : Math.abs(dy) * 0.5);
+        return dx + (dy > 0 ? dy * 1.0 : Math.abs(dy) * 0.5);
     }
 
     private mergeContext(context?: Partial<PlannerContext>): PlannerContext {
@@ -739,7 +739,7 @@ export class NavGraph {
 
     findPath(startId: number, targetId: number, maxNodes: number = 50): number[] | null {
         const detailed = this.findPathDetailed(startId, targetId, {
-            maxStates: Math.max(80, maxNodes * 3),
+            maxStates: Math.max(160, maxNodes * 12),
             context: DEFAULT_PLANNER_CONTEXT
         });
         return detailed ? detailed.nodes : null;

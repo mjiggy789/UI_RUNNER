@@ -5,7 +5,7 @@ import { computeWorldChecksum, type WorldChecksum } from './world-checksum';
 import { Pose } from './controller';
 
 const CELL_SIZE = 120;
-const MAX_COLLIDERS = 2500;
+const MAX_COLLIDERS = 8000;
 const RESCAN_THROTTLE_MS = 500;
 
 export class SpatialGrid {
