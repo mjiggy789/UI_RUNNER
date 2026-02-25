@@ -8,17 +8,26 @@ The Parkour Bot runtime is built as a layered system: a DOM-to-physics world mod
 - A navigation graph (`NavGraph`) treats platforms as nodes and movement options (walk/jump/drop) as directed edges.
 - Failed or unreliable transitions are temporarily invalidated so the planner avoids repeating bad routes.
 
-## 2. High-Level Planner
-- Chooses candidate goals with multi-factor scoring (distance, vertical gain, novelty/repeat pressure, and reachability bias).
-- Runs A* over the graph to produce a route.
-- Splits routing into:
-  - **Final target**: strategic destination.
-  - **Step target**: immediate stepping-stone waypoint for execution.
+## 2. Navigation Layer (Planner + Solvers)
+The navigation system is split into three tiers of responsibility:
+
+- **Global Planner (`NavGraph`)**:
+  - Runs A* over the pre-computed graph to find long-distance routes.
+  - Generates a sequence of platforms (nodes) and specific maneuvers (edges).
+- **Detour Planner**:
+  - Handles mid-route interruptions (e.g., dynamic obstacles, unexpected blocks).
+  - Finds temporary sub-targets to route around the blockage without abandoning the final goal.
+- **Local Solver**:
+  - A fallback system used when the graph fails or contains gaps.
+  - Raycasts for immediate, physics-valid jumps to nearby surfaces ("blind" jumps).
+  - Bypasses the pre-computed graph to find ad-hoc solutions.
 
 ## 3. Low-Level Mover (Brain + Controller)
-- `Brain` computes input intents (`left/right/jump/down/up`) from current pose and route state.
-- `Controller` applies physics and collisions with fixed-step substepping.
-- Movement supports:
+- **Brain**: The decision engine. It consumes the route from the Planner layer and computes input intents (`left/right/jump/down/up`).
+  - Manages state machines for complex actions (Tic-Tac, Wall Climb).
+  - Handles "Micro-Navigation" (local obstacle avoidance, ceiling escape).
+- **Controller**: The physics engine. Applies velocity, gravity, and collision resolution with fixed-step substepping.
+- **Movement Capabilities**:
   - Ground run and crouch-slide.
   - Wall-slide, climb, and wall-hop breakouts.
   - Tic-tac wall-to-wall ascent in narrow vertical corridors.
