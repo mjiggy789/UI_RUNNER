@@ -31,7 +31,6 @@ const VISUALIZATION_TOGGLES: VisualizationToggleDef[] = [
     { id: 'pkb-viz-probes-toggle', key: 'probes', label: 'Collision Probes', description: 'Show wall, ceiling, gap, and drop planning probes.' },
     { id: 'pkb-viz-tictac-toggle', key: 'ticTac', label: 'Tic-Tac Logic', description: 'Show corridor width, eligibility, and kick direction.' },
     { id: 'pkb-viz-input-vector-toggle', key: 'inputVector', label: 'Input Vector', description: 'Draw facing/input bias vector from the bot.' },
-    { id: 'pkb-viz-hud-toggle', key: 'hud', label: 'Debug HUD', description: 'Show numeric readout panel for active calculations.' },
     { id: 'pkb-viz-timers-toggle', key: 'timers', label: 'Timer Breakdown', description: 'Include cooldown and stagnation timers in HUD.' }
 ];
 
@@ -344,6 +343,12 @@ class Runtime {
                 'Real Website Mode',
                 'Replace training grounds with a realistic landing page.',
                 this.realWebsiteMode
+            ),
+            this.renderToggleRow(
+                'pkb-telemetry-toggle',
+                'Telemetry Display',
+                'Show real-time internal state and decision metrics overlay.',
+                this.visualizationSettings.hud
             )
         ].join('');
         const visualizationRows = VISUALIZATION_TOGGLES
@@ -387,6 +392,12 @@ class Runtime {
             this.realWebsiteMode = realSiteToggle.checked;
             this.toggleRealWebsite(this.realWebsiteMode);
             console.log('ParkourBot: Real Website Mode', this.realWebsiteMode ? 'ON' : 'OFF');
+        });
+
+        const telemetryToggle = document.getElementById('pkb-telemetry-toggle') as HTMLInputElement;
+        telemetryToggle?.addEventListener('change', () => {
+            this.visualizationSettings.hud = telemetryToggle.checked;
+            console.log('ParkourBot: Telemetry Display', this.visualizationSettings.hud ? 'ON' : 'OFF');
         });
 
         this.wireVisualizationToggles();
