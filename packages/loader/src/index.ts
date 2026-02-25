@@ -3,8 +3,8 @@ import nacl from 'tweetnacl';
 import { decodeUTF8, decodeBase64 } from 'tweetnacl-util';
 
 // Loader constants
-const CDN_BASE_URL = 'http://localhost:3000';
-const API_BASE_URL = 'http://localhost:3001';
+const CDN_BASE_URL = 'http://localhost:4000';
+const API_BASE_URL = 'http://localhost:4001';
 
 /**
  * Parses the current script tag to extract configuration.

@@ -64,7 +64,7 @@ console.log('Public Key for Verification (Base64):', encodeBase64(SIGNING_KEY_PA
 import cors from 'cors';
 
 const app = express();
-const port = process.env.PORT || 3001;
+const port = process.env.PORT || 4001;
 
 app.use(cors());
 
