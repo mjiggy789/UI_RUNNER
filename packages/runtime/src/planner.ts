@@ -397,8 +397,8 @@ export class NavGraph {
 
     private hasTakeoffHeadroom(takeoffX: number, from: Collider): boolean {
         const probe: AABB = {
-            x1: takeoffX - 11,
-            x2: takeoffX + 11,
+            x1: takeoffX - 14,
+            x2: takeoffX + 14,
             y1: from.aabb.y1 - 56,
             y2: from.aabb.y1 - 2
         };
@@ -430,9 +430,9 @@ export class NavGraph {
             const px = x1 + dx * t;
             const py = y1 + dy * t;
             const probe: AABB = {
-                x1: px - 8,
-                x2: px + 8,
-                y1: py - 38,
+                x1: px - 12,
+                x2: px + 12,
+                y1: py - 42,
                 y2: py + 2
             };
             const hits = this.world.query(probe);

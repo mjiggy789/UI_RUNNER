@@ -4018,6 +4018,13 @@ export class Brain {
             score += 20;
         }
 
+        // 5. Commitment Stickiness (Hysteresis) to prevent Ping-Ponging
+        if (this.lockedTargetId !== null && c.id === this.lockedTargetId) {
+            score += 200; // Tremendous stickiness so the bot does not abandon a strategic target
+        } else if (this.targetPlatform !== null && c.id === this.targetPlatform.id) {
+            score += 150; // Stickiness for immediate waypoint
+        }
+
         // 5. Reachability
         if (dy > 0 && dy <= MAX_SINGLE_HOP && dx < 500) {
             score += 10;
