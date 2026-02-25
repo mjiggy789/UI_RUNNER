@@ -31,7 +31,7 @@ export const DEFAULT_DEBUG_VISUALIZATION_SETTINGS: DebugVisualizationSettings = 
     probes: true,
     ticTac: true,
     inputVector: true,
-    hud: true,
+    hud: false,
     timers: true
 };
 
@@ -447,107 +447,107 @@ export class Renderer {
                 ctx.lineTo(botCenterX + lookAhead, pose.y + pose.height + 20);
                 ctx.stroke();
             }
+        }
 
-            if (viz.hud) {
-                const hudX = 20;
-                const lineH = 18;
-                const lines: { text: string; color: string; bold?: boolean }[] = [];
+        if (viz.hud) {
+            const hudX = 20;
+            const lineH = 18;
+            const lines: { text: string; color: string; bold?: boolean }[] = [];
 
-                lines.push({ text: `State: ${brainState.toUpperCase()}`, color: '#94a3b8' });
-                lines.push({ text: `Behavior: ${behaviorState.toUpperCase()}`, color: '#7dd3fc' });
-                lines.push({ text: `Settings: [S]  Debug: [D]`, color: '#64748b' });
+            lines.push({ text: `State: ${brainState.toUpperCase()}`, color: '#94a3b8' });
+            lines.push({ text: `Behavior: ${behaviorState.toUpperCase()}`, color: '#7dd3fc' });
+            lines.push({ text: `Settings: [S]  Debug: [D]`, color: '#64748b' });
 
-                if (hasSubTarget && viz.route) {
-                    lines.push({ text: `Route: STEP -> FINAL`, color: '#fbbf24', bold: true });
-                    lines.push({ text: `  ${brainCurrentTargetId} -> ${brainLockedTargetId}`, color: '#86efac' });
+            if (hasSubTarget && viz.route) {
+                lines.push({ text: `Route: STEP -> FINAL`, color: '#fbbf24', bold: true });
+                lines.push({ text: `  ${brainCurrentTargetId} -> ${brainLockedTargetId}`, color: '#86efac' });
+            }
+
+            if (brainDebug) {
+                lines.push({
+                    text: `Calc: dx=${this.fmtNumber(brainDebug.targetDx, 0)} h=${this.fmtNumber(brainDebug.heightDiff, 0)} moveDx=${this.fmtNumber(brainDebug.moveDx, 0)}`,
+                    color: '#cbd5e1'
+                });
+                lines.push({
+                    text: `Steer: dir=${brainDebug.moveDir} dead=${this.fmtNumber(brainDebug.deadzone, 0)} stick=${this.fmtNumber(brainDebug.stickyBand, 0)}`,
+                    color: '#cbd5e1'
+                });
+                lines.push({
+                    text: `Wall: dir=${brainDebug.wallDir} L=${brainDebug.wallProbeLeftHit ? 'hit' : '-'} R=${brainDebug.wallProbeRightHit ? 'hit' : '-'}`,
+                    color: '#cbd5e1'
+                });
+                lines.push({
+                    text: `TicTac: elig=${brainDebug.ticTacEligible ? 'y' : 'n'} active=${brainDebug.ticTacActive ? 'y' : 'n'} dir=${brainDebug.ticTacDir}`,
+                    color: '#cbd5e1'
+                });
+                lines.push({
+                    text: `Ceiling: overhead=${brainDebug.overheadBlocked ? 'block' : 'clear'} head=${brainDebug.ceilingBlocked ? 'block' : 'clear'}`,
+                    color: '#cbd5e1'
+                });
+                lines.push({
+                    text: `AirTuck: ${brainDebug.airTuckWanted ? 'on' : 'off'}`,
+                    color: brainDebug.airTuckWanted ? '#fda4af' : '#cbd5e1'
+                });
+                lines.push({
+                    text: `Gap/Drop: ground=${brainDebug.gapProbeHasGround === null ? '-' : (brainDebug.gapProbeHasGround ? 'yes' : 'no')} drop=${this.fmtNumber(brainDebug.dropPlannedEdgeX, 0)}`,
+                    color: '#cbd5e1'
+                });
+                lines.push({
+                    text: `Maneuver: ${brainDebug.maneuverFromId ?? '-'}->${brainDebug.maneuverToId ?? '-'} takeoff=${this.fmtNumber(brainDebug.maneuverDistToTakeoff, 0)} los=${brainDebug.maneuverLOS ? 'yes' : 'no'} gain=${this.fmtNumber(brainDebug.maneuverVerticalGain, 0)} stall=${brainDebug.maneuverStagnation.toFixed(2)}`,
+                    color: '#cbd5e1'
+                });
+
+                if (viz.timers) {
+                    lines.push({
+                        text: `Timers: stagn=${brainDebug.timers.progressStagnation.toFixed(2)} jumpCD=${brainDebug.timers.jumpCooldown.toFixed(2)} wallCD=${brainDebug.timers.wallDecision.toFixed(2)}`,
+                        color: '#fcd34d'
+                    });
+                    lines.push({
+                        text: `Timers: wallSlide=${brainDebug.timers.wallSlide.toFixed(2)} ceilSup=${brainDebug.timers.ceilingSuppress.toFixed(2)} retry=${brainDebug.timers.retryCount}`,
+                        color: '#fcd34d'
+                    });
                 }
+            }
 
-                if (brainDebug) {
-                    lines.push({
-                        text: `Calc: dx=${this.fmtNumber(brainDebug.targetDx, 0)} h=${this.fmtNumber(brainDebug.heightDiff, 0)} moveDx=${this.fmtNumber(brainDebug.moveDx, 0)}`,
-                        color: '#cbd5e1'
-                    });
-                    lines.push({
-                        text: `Steer: dir=${brainDebug.moveDir} dead=${this.fmtNumber(brainDebug.deadzone, 0)} stick=${this.fmtNumber(brainDebug.stickyBand, 0)}`,
-                        color: '#cbd5e1'
-                    });
-                    lines.push({
-                        text: `Wall: dir=${brainDebug.wallDir} L=${brainDebug.wallProbeLeftHit ? 'hit' : '-'} R=${brainDebug.wallProbeRightHit ? 'hit' : '-'}`,
-                        color: '#cbd5e1'
-                    });
-                    lines.push({
-                        text: `TicTac: elig=${brainDebug.ticTacEligible ? 'y' : 'n'} active=${brainDebug.ticTacActive ? 'y' : 'n'} dir=${brainDebug.ticTacDir}`,
-                        color: '#cbd5e1'
-                    });
-                    lines.push({
-                        text: `Ceiling: overhead=${brainDebug.overheadBlocked ? 'block' : 'clear'} head=${brainDebug.ceilingBlocked ? 'block' : 'clear'}`,
-                        color: '#cbd5e1'
-                    });
-                    lines.push({
-                        text: `AirTuck: ${brainDebug.airTuckWanted ? 'on' : 'off'}`,
-                        color: brainDebug.airTuckWanted ? '#fda4af' : '#cbd5e1'
-                    });
-                    lines.push({
-                        text: `Gap/Drop: ground=${brainDebug.gapProbeHasGround === null ? '-' : (brainDebug.gapProbeHasGround ? 'yes' : 'no')} drop=${this.fmtNumber(brainDebug.dropPlannedEdgeX, 0)}`,
-                        color: '#cbd5e1'
-                    });
-                    lines.push({
-                        text: `Maneuver: ${brainDebug.maneuverFromId ?? '-'}->${brainDebug.maneuverToId ?? '-'} takeoff=${this.fmtNumber(brainDebug.maneuverDistToTakeoff, 0)} los=${brainDebug.maneuverLOS ? 'yes' : 'no'} gain=${this.fmtNumber(brainDebug.maneuverVerticalGain, 0)} stall=${brainDebug.maneuverStagnation.toFixed(2)}`,
-                        color: '#cbd5e1'
-                    });
+            if (controller.brainHitConfirmed) {
+                const hitId = controller.brainLastHitId;
+                const hitLabel = hitId !== null ? `ID:${hitId}` : 'COORD';
+                lines.push({ text: `Hit confirmed: ${hitLabel}`, color: '#00ffaa', bold: true });
+            }
 
-                    if (viz.timers) {
-                        lines.push({
-                            text: `Timers: stagn=${brainDebug.timers.progressStagnation.toFixed(2)} jumpCD=${brainDebug.timers.jumpCooldown.toFixed(2)} wallCD=${brainDebug.timers.wallDecision.toFixed(2)}`,
-                            color: '#fcd34d'
-                        });
-                        lines.push({
-                            text: `Timers: wallSlide=${brainDebug.timers.wallSlide.toFixed(2)} ceilSup=${brainDebug.timers.ceilingSuppress.toFixed(2)} retry=${brainDebug.timers.retryCount}`,
-                            color: '#fcd34d'
-                        });
-                    }
-                }
+            if (controller.brainStrictMode) {
+                lines.push({ text: `Strict Mode ON`, color: '#f59e0b', bold: true });
+                const retries = controller.brainRetryCount || 0;
+                if (retries > 0) lines.push({ text: `Attempt #${retries + 1}`, color: '#94a3b8' });
+            }
 
-                if (controller.brainHitConfirmed) {
-                    const hitId = controller.brainLastHitId;
-                    const hitLabel = hitId !== null ? `ID:${hitId}` : 'COORD';
-                    lines.push({ text: `Hit confirmed: ${hitLabel}`, color: '#00ffaa', bold: true });
-                }
+            ctx.font = '13px monospace';
+            const maxTextW = lines.reduce((maxW, line) => Math.max(maxW, ctx.measureText(line.text).width), 0);
+            const panelW = Math.max(220, maxTextW + 24);
+            const panelH = lines.length * lineH + 18;
+            const panelY = (this.canvas.height / dpr) - panelH - 20;
 
-                if (controller.brainStrictMode) {
-                    lines.push({ text: `Strict Mode ON`, color: '#f59e0b', bold: true });
-                    const retries = controller.brainRetryCount || 0;
-                    if (retries > 0) lines.push({ text: `Attempt #${retries + 1}`, color: '#94a3b8' });
-                }
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.86)';
+            ctx.strokeStyle = 'rgba(56, 189, 248, 0.3)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            const maybeRoundRect = ctx as CanvasRenderingContext2D & {
+                roundRect?: (x: number, y: number, w: number, h: number, radii: number) => void;
+            };
+            if (typeof maybeRoundRect.roundRect === 'function') {
+                maybeRoundRect.roundRect(hudX - 10, panelY, panelW, panelH, 8);
+            } else {
+                ctx.rect(hudX - 10, panelY, panelW, panelH);
+            }
+            ctx.fill();
+            ctx.stroke();
 
-                ctx.font = '13px monospace';
-                const maxTextW = lines.reduce((maxW, line) => Math.max(maxW, ctx.measureText(line.text).width), 0);
-                const panelW = Math.max(220, maxTextW + 24);
-                const panelH = lines.length * lineH + 18;
-                const panelY = (this.canvas.height / dpr) - panelH - 20;
-
-                ctx.fillStyle = 'rgba(15, 23, 42, 0.86)';
-                ctx.strokeStyle = 'rgba(56, 189, 248, 0.3)';
-                ctx.lineWidth = 1;
-                ctx.beginPath();
-                const maybeRoundRect = ctx as CanvasRenderingContext2D & {
-                    roundRect?: (x: number, y: number, w: number, h: number, radii: number) => void;
-                };
-                if (typeof maybeRoundRect.roundRect === 'function') {
-                    maybeRoundRect.roundRect(hudX - 10, panelY, panelW, panelH, 8);
-                } else {
-                    ctx.rect(hudX - 10, panelY, panelW, panelH);
-                }
-                ctx.fill();
-                ctx.stroke();
-
-                let currentLineY = panelY + 20;
-                for (const line of lines) {
-                    ctx.font = `${line.bold ? 'bold ' : ''}13px monospace`;
-                    ctx.fillStyle = line.color;
-                    ctx.fillText(line.text, hudX, currentLineY);
-                    currentLineY += lineH;
-                }
+            let currentLineY = panelY + 20;
+            for (const line of lines) {
+                ctx.font = `${line.bold ? 'bold ' : ''}13px monospace`;
+                ctx.fillStyle = line.color;
+                ctx.fillText(line.text, hudX, currentLineY);
+                currentLineY += lineH;
             }
         }
 
