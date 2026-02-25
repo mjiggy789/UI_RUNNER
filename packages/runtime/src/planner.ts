@@ -13,7 +13,7 @@ const TAKEOFF_PAD = 10;
 const LANDING_PAD = 10;
 const TAKEOFF_SAMPLE_STEP = 14;
 const LANDING_SAMPLE_STEP = 18;
-const MAX_JUMP_HORIZ = 340;
+const MAX_JUMP_HORIZ = 290;
 const MAX_JUMP_UP = 220;
 const MAX_DROP = 920;
 const MAX_WALL_JUMP_GAP = 260;
@@ -208,6 +208,9 @@ export class NavGraph {
         let requiresRailLatch = false;
         let costBase = 0;
 
+        // Exponential penalty for long jumps to encourage intermediate platforms
+        const distPenalty = Math.max(0, Math.pow(centerDx / 200, 3)) * 150;
+
         if (Math.abs(dy) <= 14 && dxGap <= 42) {
             action = 'walk';
             costBase = dxGap + 12;
@@ -217,7 +220,7 @@ export class NavGraph {
         } else if (dy < -18 && dy >= -MAX_DROP && centerDx <= MAX_JUMP_HORIZ + 20) {
             action = 'jump-down';
             requiresJump = true;
-            costBase = Math.hypot(centerDx, -dy) * 0.7 + 45;
+            costBase = Math.hypot(centerDx, -dy) * 0.7 + 45 + distPenalty;
         } else if (
             dy > 18 &&
             (fromIsWallish || toIsWallish) &&
@@ -226,15 +229,15 @@ export class NavGraph {
         ) {
             action = 'wall-jump';
             requiresJump = true;
-            costBase = Math.hypot(centerDx, dy) * 1.7 + 86;
+            costBase = Math.hypot(centerDx, dy) * 1.7 + 86 + distPenalty;
         } else if (dy > 18 && dy <= MAX_JUMP_UP && centerDx <= MAX_JUMP_HORIZ + 40) {
             action = 'jump-high';
             requiresJump = true;
-            costBase = Math.hypot(centerDx, dy) * 1.95 + 88;
+            costBase = Math.hypot(centerDx, dy) * 1.95 + 88 + distPenalty;
         } else if (centerDx <= MAX_JUMP_HORIZ + 60 && Math.abs(dy) <= 84) {
             action = 'jump-gap';
             requiresJump = true;
-            costBase = centerDx * 1.48 + Math.abs(dy) * 0.6 + 52;
+            costBase = centerDx * 1.48 + Math.abs(dy) * 0.6 + 52 + distPenalty;
         } else {
             return null;
         }
