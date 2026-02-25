@@ -116,7 +116,7 @@ const MANUAL_SAFE_EDGE_MARGIN = 12;
 const MANUAL_SNAP_RADIUS_X = 260;
 const MANUAL_SNAP_RADIUS_Y = 320;
 const BREADCRUMB_COST_LOOKBACK = 5;
-const BREADCRUMB_COST_EDGE_INVALID_MS = 7000;
+const BREADCRUMB_COST_EDGE_INVALID_MS = 8000;
 const BREADCRUMB_COST_TTL_MS = 10000;
 const BREADCRUMB_COST_BASE = 48;
 const BREADCRUMB_COST_STEP = 12;
@@ -1017,6 +1017,8 @@ export class Brain {
             || reason === 'idle-wall-slide-kickoff'
             || reason === 'shaft-climb-kickoff'
             || reason === 'wall-step-launch'
+            || reason === 'shaft-climb-hop'
+            || reason === 'shaft-climb-stall-hop'
             || reason.startsWith('offscreen');
     }
 
@@ -1146,7 +1148,7 @@ export class Brain {
         this.setActiveManeuver(edge, edge ? pose.groundedId : null, pose);
     }
 
-    private invalidateActiveManeuver(pose: Pose, reason: string, durationMs: number = 5200) {
+    private invalidateActiveManeuver(pose: Pose, reason: string, durationMs: number = 8000) {
         if (!this.activeManeuver || this.activeManeuverFromId === null || this.activeManeuverToId === null) return;
         this.graph.invalidateEdge(
             this.activeManeuverFromId,
@@ -2499,7 +2501,7 @@ export class Brain {
                                     this.navSlipCount++;
                                     if (this.navSlipCount > 3) {
                                         this.recordLog('NAV_SLIP_LOOP', pose, `count=${this.navSlipCount}`);
-                                        this.invalidateActiveManeuver(pose, 'slip-loop', 6000);
+                                        this.invalidateActiveManeuver(pose, 'slip-loop', 8000);
                                         this.reroute(pose, 'slip-loop');
                                         return input;
                                     }
@@ -2865,6 +2867,21 @@ export class Brain {
                             moveDir = this.moveCommitDir;
                         } else if (Math.abs(moveDx) > deadzone) {
                             moveDir = moveDx > 0 ? 1 : -1;
+                        }
+
+                        // Trajectory Commitment: if airborne and committed, suppress braking/reversal
+                        if (!pose.grounded && this.maneuverCommitted && moveDir !== 0) {
+                            const currentDir = pose.vx > 20 ? 1 : (pose.vx < -20 ? -1 : 0);
+                            if (currentDir !== 0 && moveDir !== currentDir) {
+                                // We are trying to reverse direction in air.
+                                // If we are just overshooting slightly, let it fly to preserve momentum.
+                                const overshoot = (currentDir > 0 && moveDx < -20) || (currentDir < 0 && moveDx > 20);
+                                if (overshoot && Math.abs(moveDx) < 80) {
+                                    moveDir = currentDir; // Maintain course
+                                } else if (overshoot) {
+                                    moveDir = 0; // Just drift, don't hard brake
+                                }
+                            }
                         }
                     }
 
@@ -3255,6 +3272,11 @@ export class Brain {
         const targetIsBelow = targetY !== null && targetY > (botFeetY + 10);
         const lookAhead = input.right ? 25 : input.left ? -25 : 0;
         const jumpAllowed = this.navState === 'nav-ready';
+        const canEarlyHighJump = this.navState === 'nav-approach'
+            && this.approachPhase === 'direct'
+            && targetX !== null
+            && targetY !== null
+            && heightDiff > 40;
 
         if (lookAhead !== 0 && pose.grounded && this.currentState === 'seek' && this.approachPhase !== 'backup' && !targetIsBelow && !input.down) {
             const projectedFeet = { x1: pose.x + (input.right ? pose.width : 0) + lookAhead, y1: botFeetY, x2: pose.x + (input.right ? pose.width : 0) + lookAhead + 10, y2: botFeetY + 40 };
@@ -3359,7 +3381,7 @@ export class Brain {
             }
 
             // High Ground Jump (skip during backup phase — don't jump while retreating)
-            if (jumpAllowed && targetX !== null && this.approachPhase !== 'backup' && heightDiff > 12 && !input.down && !input.jump && !crouchClearancePath && !suppressCeilingJump) {
+            if ((jumpAllowed || canEarlyHighJump) && targetX !== null && this.approachPhase !== 'backup' && heightDiff > 12 && !input.down && !input.jump && !crouchClearancePath && !suppressCeilingJump) {
                 // Check if target requires more height than current ceiling allows
                 const clearanceNeeded = Math.min(100, heightDiff + 10);
                 const ceilingQuery = {
@@ -3764,6 +3786,23 @@ export class Brain {
                 }
             }));
         };
+
+        if (reason.includes('island')) {
+            if (this.tryPickCoordinateTarget(pose, this.world.getAll(), true, true)) {
+                this.recordLog('LOOP_FALLBACK', pose, `sig=${signature} ${reason}: island-panic forced non-local coord`);
+                window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
+                    detail: {
+                        type: 'loop_fallback',
+                        reason,
+                        mode: 'coordinate',
+                        targetX: this.targetX,
+                        targetY: this.autoTargetY
+                    }
+                }));
+                return;
+            }
+        }
+
         const searchAABB: AABB = {
             x1: botCx - 420,
             y1: botFeetY - 260,

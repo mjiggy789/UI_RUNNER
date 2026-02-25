@@ -432,8 +432,8 @@ export class NavGraph {
             const probe: AABB = {
                 x1: px - 8,
                 x2: px + 8,
-                y1: py - 14,
-                y2: py + 10
+                y1: py - 38,
+                y2: py + 2
             };
             const hits = this.world.query(probe);
             for (const c of hits) {
