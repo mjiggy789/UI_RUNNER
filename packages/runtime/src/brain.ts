@@ -2621,9 +2621,10 @@ export class Brain {
                     );
                 }
 
+                const isDownwardTicTac = targetY !== null && heightDiff < -TIC_TAC_MIN_HEIGHT && this.activeManeuver?.action === 'wall-slide';
                 const ticTacEligible =
                     targetY !== null &&
-                    heightDiff > TIC_TAC_MIN_HEIGHT &&
+                    (heightDiff > TIC_TAC_MIN_HEIGHT || isDownwardTicTac) &&
                     !pose.grounded &&
                     !this.shaftClimbActive &&
                     (ticTacCorridor !== null || this.ticTacPersistTimer > 0);
@@ -2696,7 +2697,8 @@ export class Brain {
                         this.ticTacDir = initDir as -1 | 1;
                         this.ticTacWallHoldTimer = 0;
                         this.ticTacJumpTimer = 0;
-                        this.recordLog('TIC_TAC_START', pose, `dir=${initDir > 0 ? 'R' : 'L'} gap=${ticTacCorridor ? Math.round(ticTacCorridor.width) : '-'}`);
+                        this.ticTacBestY = heightDiff > 0 ? Infinity : -Infinity;
+                        this.recordLog('TIC_TAC_START', pose, `dir=${initDir > 0 ? 'R' : 'L'} gap=${ticTacCorridor ? Math.round(ticTacCorridor.width) : '-'} mode=${heightDiff > 0 ? 'up' : 'down'}`);
                     }
 
                     ticTacHandled = true;
@@ -2735,7 +2737,11 @@ export class Brain {
                         input.right = steerDir > 0;
                     }
 
-                    if (pose.y < this.ticTacBestY - 10) {
+                    const makingProgress = heightDiff > 0
+                        ? pose.y < this.ticTacBestY - 10
+                        : pose.y > this.ticTacBestY + 10;
+
+                    if (makingProgress) {
                         this.ticTacBestY = pose.y;
                         this.ticTacStallTimer = 0;
                     } else {

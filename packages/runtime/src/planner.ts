@@ -44,6 +44,7 @@ export type NavAction =
     | 'jump-high'
     | 'jump-down'
     | 'wall-jump'
+    | 'wall-slide'
     | 'rail-latch';
 
 export interface PlannerContext {
@@ -217,6 +218,16 @@ export class NavGraph {
         } else if (dy < -18 && dxGap <= 54) {
             action = 'drop-edge';
             costBase = Math.abs(dy) * 0.45 + 18;
+        } else if (
+            dy < -18 &&
+            fromIsWallish &&
+            toIsWallish &&
+            centerDx <= MAX_WALL_JUMP_GAP &&
+            dy >= -MAX_DROP
+        ) {
+            action = 'wall-slide';
+            requiresJump = true;
+            costBase = Math.hypot(centerDx, -dy) * 0.9 + 60 + distPenalty;
         } else if (dy < -18 && dy >= -MAX_DROP && centerDx <= MAX_JUMP_HORIZ + 20) {
             action = 'jump-down';
             requiresJump = true;
