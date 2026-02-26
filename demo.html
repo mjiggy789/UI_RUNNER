@@ -39,8 +39,8 @@
         #game-stage {
             position: relative;
             width: 100vw;
-            height: calc(100vh - 60px);
-            margin-top: 60px;
+            height: 100vh;
+            margin-top: 0;
             background-image:
                 linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
                 linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
@@ -537,10 +537,7 @@
 </head>
 
 <body>
-    <!-- Navigation Bar -->
-    <nav class="navbar">
-        <div class="navbar-brand">PARKOUR_BOT</div>
-    </nav>
+
 
     <!-- Auth Modal -->
     <div class="auth-modal" id="auth-modal">
@@ -628,7 +625,7 @@
     </div>
 
     <div id="game-stage">
-        <h1>Parkour Sandbox Builder</h1>
+
         <div class="hint">D: debug | S: settings | R: respawn | L: logs<br>Del: remove | Esc: cancel | Arrows: nudge
             (Shift:
             bigger)</div>
@@ -1180,7 +1177,56 @@
             }
         });
 
-        restoreLayout();
+        // Default tic-tac testing layout — loaded when no saved layout exists
+        const TIC_TAC_DEFAULT_LAYOUT = [
+            // ── Ground floor ──
+            { type: "solid", x: 0, y: 680, w: 1920, h: 40 },
+
+            // ── Left shaft: two tall walls forming a 140px corridor ──
+            { type: "wall", x: 120, y: 200, w: 40, h: 480 },   // left wall
+            { type: "wall", x: 300, y: 200, w: 40, h: 480 },   // right wall
+            // Intermediate landing inside shaft
+            { type: "solid", x: 140, y: 440, w: 140, h: 16 },
+            // Top landing platform
+            { type: "solid", x: 100, y: 184, w: 200, h: 16 },
+
+            // ── Center shaft: wider corridor (180px) ──
+            { type: "wall", x: 560, y: 160, w: 48, h: 520 },   // left wall
+            { type: "wall", x: 788, y: 160, w: 48, h: 520 },   // right wall
+            // Mid-shaft ledge
+            { type: "solid", x: 608, y: 400, w: 180, h: 16 },
+            // Top landing
+            { type: "solid", x: 548, y: 144, w: 300, h: 16 },
+
+            // ── Right shaft: narrow corridor (100px) for tight tic-tac ──
+            { type: "wall", x: 1080, y: 220, w: 36, h: 460 },  // left wall
+            { type: "wall", x: 1216, y: 220, w: 36, h: 460 },  // right wall
+            // Mid-shaft ledge
+            { type: "solid", x: 1100, y: 460, w: 100, h: 16 },
+            // Top landing
+            { type: "solid", x: 1060, y: 204, w: 212, h: 16 },
+
+            // ── Connecting bridges between shafts ──
+            { type: "solid", x: 340, y: 360, w: 220, h: 16 },  // left→center bridge
+            { type: "solid", x: 836, y: 320, w: 244, h: 16 },  // center→right bridge
+
+            // ── Far-right elevated goal platform ──
+            { type: "goal", x: 1400, y: 280, w: 200, h: 16 },
+
+            // ── Step-down platforms on far right for downward tic-tac return ──
+            { type: "solid", x: 1400, y: 500, w: 160, h: 16 },
+            { type: "solid", x: 1440, y: 620, w: 120, h: 16 },
+        ];
+
+        // Use saved layout if available, otherwise load the tic-tac test layout
+        const hasSaved = (() => {
+            try { return !!window.localStorage.getItem(STORAGE_KEY); } catch (_) { return false; }
+        })();
+        if (hasSaved) {
+            restoreLayout();
+        } else {
+            loadLayout(TIC_TAC_DEFAULT_LAYOUT);
+        }
         setMode('draw');
         jsonBox.value = JSON.stringify(serialize(), null, 2);
         scheduleRescan();

@@ -37,7 +37,7 @@ export interface Pose {
     grounded: boolean;
     groundedId: number | null;
     jumps: number;
-    state: 'idle' | 'run' | 'jump' | 'fall' | 'wall-slide' | 'double-jump' | 'triple-jump' | 'slide' | 'climb';
+    state: 'idle' | 'run' | 'jump' | 'fall' | 'wall-slide' | 'double-jump' | 'triple-jump' | 'slide' | 'climb' | 'dash';
     facing: 1 | -1;
     ceilingBonk?: boolean;
 }
@@ -48,6 +48,7 @@ export interface ControlInput {
     jump: boolean;
     down: boolean;
     up: boolean;
+    dash?: boolean;
     jumpGauge?: number | null;
 }
 
@@ -78,6 +79,8 @@ export class Controller {
     private lastClimbY: number | null = null;
     private crouchLatchTimer: number = 0;
     private slideMoveDir: 1 | -1 = 1;
+    private dashTimer: number = 0;
+    private dashCooldownTimer: number = 0;
 
     private clampJumpGauge(gauge: number | null | undefined): number | null {
         if (gauge === null || gauge === undefined || !Number.isFinite(gauge)) return null;
@@ -150,6 +153,8 @@ export class Controller {
         this.lastClimbY = null;
         this.crouchLatchTimer = 0;
         this.slideMoveDir = this.pose.facing;
+        this.dashTimer = 0;
+        this.dashCooldownTimer = 0;
     }
 
     update(dt: number, input: ControlInput) {
@@ -179,6 +184,29 @@ export class Controller {
     }
 
     private singleStep(dt: number, input: ControlInput) {
+        if (this.dashCooldownTimer > 0) this.dashCooldownTimer -= dt;
+
+        const DASH_SPEED = 450;
+        const DASH_DURATION = 0.2;
+        const DASH_COOLDOWN = 2.5; // Increased cooldown so it can't be spammed
+
+        if (input.dash && this.dashCooldownTimer <= 0 && this.dashTimer <= 0) {
+            this.dashTimer = DASH_DURATION;
+            this.dashCooldownTimer = DASH_COOLDOWN;
+        }
+
+        if (this.dashTimer > 0) {
+            this.dashTimer -= dt;
+            this.pose.state = 'dash';
+            this.pose.vy = 0; // Suspend gravity
+            this.pose.vx = this.pose.facing * DASH_SPEED;
+
+            if (this.isTouchingSolidWall(this.pose.facing)) {
+                this.dashTimer = 0; // cancel dash early if hitting a wall
+                this.pose.vx = 0;
+            }
+        }
+
         // 0. Crouch / Slide State Management
         const wasSliding = this.pose.state === 'slide';
         const NORMAL_HEIGHT = 40;
@@ -256,172 +284,147 @@ export class Controller {
             this.pose.y += diff; // Move top down/up to keep feet fixed
         }
 
-        // 1. Apply gravity
-        this.pose.vy += GRAVITY * dt;
-        if (this.pose.vy > TERMINAL_VELOCITY) this.pose.vy = TERMINAL_VELOCITY;
+        if (this.dashTimer > 0) {
+            // Dash bypasses standard gravity, jumps and horizontal movement adjustments
+        } else {
+            // 1. Apply gravity
+            this.pose.vy += GRAVITY * dt;
+            if (this.pose.vy > TERMINAL_VELOCITY) this.pose.vy = TERMINAL_VELOCITY;
 
-        // 2. Horizontal movement
-        const targetVx = input.left ? -MOVE_SPEED : input.right ? MOVE_SPEED : 0;
+            // 2. Horizontal movement
+            const targetVx = input.left ? -MOVE_SPEED : input.right ? MOVE_SPEED : 0;
 
-        if (this.pose.grounded) {
-            // Snappy ground movement (modified by state)
-            if (wantCrouch) {
-                // Slide / Crouch walk: once sliding starts, keep momentum directional.
-                this.pose.state = 'slide';
-                const requestedDir = input.left ? -1 : input.right ? 1 : 0;
+            if (this.pose.grounded) {
+                // Snappy ground movement (modified by state)
+                if (wantCrouch) {
+                    this.pose.state = 'slide';
 
-                if (!wasSliding) {
-                    const entryDir: 1 | -1 =
-                        requestedDir !== 0
-                            ? requestedDir as 1 | -1
-                            : this.pose.vx !== 0
-                                ? (Math.sign(this.pose.vx) > 0 ? 1 : -1)
-                                : this.pose.facing;
-                    this.slideMoveDir = entryDir;
-                }
-
-                if (requestedDir !== 0) {
-                    this.slideMoveDir = requestedDir as 1 | -1;
-                }
-
-                let moveDir = this.slideMoveDir;
-                if (this.isTouchingSolidWall(moveDir)) {
-                    const opposite = (moveDir === 1 ? -1 : 1) as 1 | -1;
-                    // If blocked, allow explicit opposite input or auto-flip to avoid idle-in-slide.
-                    if (requestedDir === opposite || requestedDir === 0 || requestedDir === moveDir) {
-                        moveDir = requestedDir !== 0 ? requestedDir as 1 | -1 : opposite;
-                        this.slideMoveDir = moveDir;
+                    if (!wasSliding && Math.abs(this.pose.vx) > 200) {
+                        // Boost into the slide if we had sufficient running speed
+                        this.pose.vx = Math.sign(this.pose.vx) * Math.max(Math.abs(this.pose.vx), SLIDE_ENTRY_BOOST_SPEED);
                     }
-                }
 
-                this.pose.facing = this.slideMoveDir;
+                    // Slide is now purely momentum-based (no static crouch walking)
+                    const slideFriction = 650 * dt;
+                    if (Math.abs(this.pose.vx) <= slideFriction) {
+                        this.pose.vx = 0;
+                    } else {
+                        this.pose.vx -= Math.sign(this.pose.vx) * slideFriction;
+                    }
 
-                if (!wasSliding && Math.abs(this.pose.vx) > 300) {
-                    this.pose.vx = this.slideMoveDir * SLIDE_ENTRY_BOOST_SPEED;
-                }
-
-                const desiredSpeed = Math.max(CROUCH_WALK_SPEED, CONTINUOUS_SLIDE_MIN_SPEED);
-                const targetSlideVx = this.slideMoveDir * desiredSpeed;
-                const delta = targetSlideVx - this.pose.vx;
-                const step = SLIDE_ACCEL * dt;
-                if (Math.abs(delta) <= step) {
-                    this.pose.vx = targetSlideVx;
+                    if (this.pose.vx !== 0) {
+                        this.pose.facing = Math.sign(this.pose.vx) as 1 | -1;
+                    }
                 } else {
-                    this.pose.vx += Math.sign(delta) * step;
-                }
-
-                if (Math.abs(this.pose.vx) < CONTINUOUS_SLIDE_MIN_SPEED * 0.6) {
-                    this.pose.vx = this.slideMoveDir * CONTINUOUS_SLIDE_MIN_SPEED;
-                }
-            } else {
-                // Standard Run
-                if (input.left || input.right) {
-                    this.pose.facing = input.left ? -1 : 1;
-                    this.slideMoveDir = this.pose.facing;
-                    this.pose.state = 'run';
-                    // Preserve momentum out of a slide
-                    if (Math.abs(this.pose.vx) > MOVE_SPEED && Math.sign(this.pose.vx) === this.pose.facing) {
-                        this.pose.vx *= Math.pow(0.95, dt * 60);
-                        if (Math.abs(this.pose.vx) < MOVE_SPEED) {
-                            this.pose.vx = this.pose.facing * MOVE_SPEED;
+                    // Standard Run
+                    if (input.left || input.right) {
+                        this.pose.facing = input.left ? -1 : 1;
+                        this.slideMoveDir = this.pose.facing;
+                        this.pose.state = 'run';
+                        // Preserve momentum out of a slide
+                        if (Math.abs(this.pose.vx) > MOVE_SPEED && Math.sign(this.pose.vx) === this.pose.facing) {
+                            this.pose.vx *= Math.pow(0.95, dt * 60);
+                            if (Math.abs(this.pose.vx) < MOVE_SPEED) {
+                                this.pose.vx = this.pose.facing * MOVE_SPEED;
+                            }
+                        } else {
+                            const delta = targetVx - this.pose.vx;
+                            const turning = this.pose.vx !== 0 && Math.sign(this.pose.vx) !== Math.sign(targetVx);
+                            const accel = turning ? GROUND_TURN_ACCEL : GROUND_RUN_ACCEL;
+                            const step = accel * dt;
+                            if (Math.abs(delta) <= step) {
+                                this.pose.vx = targetVx;
+                            } else {
+                                this.pose.vx += Math.sign(delta) * step;
+                            }
                         }
                     } else {
-                        const delta = targetVx - this.pose.vx;
-                        const turning = this.pose.vx !== 0 && Math.sign(this.pose.vx) !== Math.sign(targetVx);
-                        const accel = turning ? GROUND_TURN_ACCEL : GROUND_RUN_ACCEL;
-                        const step = accel * dt;
-                        if (Math.abs(delta) <= step) {
-                            this.pose.vx = targetVx;
-                        } else {
-                            this.pose.vx += Math.sign(delta) * step;
-                        }
+                        this.pose.vx *= Math.pow(DAMPING, dt * 60);
+                        if (Math.abs(this.pose.vx) < 10) this.pose.vx = 0;
+                        this.pose.state = 'idle';
+                    }
+                }
+            } else {
+                // Air control (less snappy)
+                const airAccel = 800; // units per second squared
+                if (input.left || input.right) {
+                    this.pose.facing = input.left ? -1 : 1;
+                    // Move towards target velocity
+                    if (this.pose.vx < targetVx) {
+                        this.pose.vx += airAccel * dt;
+                        if (this.pose.vx > targetVx) this.pose.vx = targetVx;
+                    } else if (this.pose.vx > targetVx) {
+                        this.pose.vx -= airAccel * dt;
+                        if (this.pose.vx < targetVx) this.pose.vx = targetVx;
                     }
                 } else {
-                    this.pose.vx *= Math.pow(DAMPING, dt * 60);
-                    if (Math.abs(this.pose.vx) < 10) this.pose.vx = 0;
-                    this.pose.state = 'idle';
+                    // Air drag
+                    this.pose.vx *= 0.95;
                 }
             }
-        } else {
-            // Air control (less snappy)
-            const airAccel = 800; // units per second squared
-            if (input.left || input.right) {
-                this.pose.facing = input.left ? -1 : 1;
-                // Move towards target velocity
-                if (this.pose.vx < targetVx) {
-                    this.pose.vx += airAccel * dt;
-                    if (this.pose.vx > targetVx) this.pose.vx = targetVx;
-                } else if (this.pose.vx > targetVx) {
-                    this.pose.vx -= airAccel * dt;
-                    if (this.pose.vx < targetVx) this.pose.vx = targetVx;
+
+            // 3. Jump & Wall Jump & Double Jump
+            const jumpPressed = input.jump && !this.prevJumpInput;
+            if (jumpPressed) {
+                this.jumpBufferTimer = JUMP_BUFFER_TIME;
+                this.jumpBufferGauge = this.clampJumpGauge(input.jumpGauge ?? null);
+            } else {
+                this.jumpBufferTimer = Math.max(0, this.jumpBufferTimer - dt);
+                if (this.jumpBufferTimer <= 0) this.jumpBufferGauge = null;
+            }
+
+            if (this.pose.grounded) this.coyoteTimer = COYOTE_TIME;
+            else this.coyoteTimer = Math.max(0, this.coyoteTimer - dt);
+
+            // Reset jumps if grounded or wall sliding/climbing
+            if (this.pose.grounded || this.pose.state === 'wall-slide' || this.pose.state === 'climb') {
+                this.pose.jumps = 0;
+            }
+
+            let wallJumped = false;
+
+            // Wall jump keeps strict edge-trigger behavior.
+            if (jumpPressed && (this.pose.state === 'wall-slide' || this.pose.state === 'climb')) {
+                const wallDir = this.pose.facing; // Facing is locked to wall during slide/climb
+                const moveDir = input.left ? -1 : input.right ? 1 : 0;
+
+                this.pose.vy = JUMP_FORCE;
+
+                // If moving away from wall or no input, do a big kick-off.
+                if (moveDir === -wallDir || moveDir === 0) {
+                    this.pose.vx = -wallDir * MOVE_SPEED * 1.5;
+                    this.pose.facing = -wallDir as 1 | -1;
+                } else {
+                    // Climbing: moving towards the wall, do a vertical scale hop.
+                    this.pose.vx = wallDir * 50;
                 }
-            } else {
-                // Air drag
-                this.pose.vx *= 0.95;
-            }
-        }
 
-        // 3. Jump & Wall Jump & Double Jump
-        const jumpPressed = input.jump && !this.prevJumpInput;
-        if (jumpPressed) {
-            this.jumpBufferTimer = JUMP_BUFFER_TIME;
-            this.jumpBufferGauge = this.clampJumpGauge(input.jumpGauge ?? null);
-        } else {
-            this.jumpBufferTimer = Math.max(0, this.jumpBufferTimer - dt);
-            if (this.jumpBufferTimer <= 0) this.jumpBufferGauge = null;
-        }
-
-        if (this.pose.grounded) this.coyoteTimer = COYOTE_TIME;
-        else this.coyoteTimer = Math.max(0, this.coyoteTimer - dt);
-
-        // Reset jumps if grounded or wall sliding/climbing
-        if (this.pose.grounded || this.pose.state === 'wall-slide' || this.pose.state === 'climb') {
-            this.pose.jumps = 0;
-        }
-
-        let wallJumped = false;
-
-        // Wall jump keeps strict edge-trigger behavior.
-        if (jumpPressed && (this.pose.state === 'wall-slide' || this.pose.state === 'climb')) {
-            const wallDir = this.pose.facing; // Facing is locked to wall during slide/climb
-            const moveDir = input.left ? -1 : input.right ? 1 : 0;
-
-            this.pose.vy = JUMP_FORCE;
-
-            // If moving away from wall or no input, do a big kick-off.
-            if (moveDir === -wallDir || moveDir === 0) {
-                this.pose.vx = -wallDir * MOVE_SPEED * 1.5;
-                this.pose.facing = -wallDir as 1 | -1;
-            } else {
-                // Climbing: moving towards the wall, do a vertical scale hop.
-                this.pose.vx = wallDir * 50;
+                this.pose.state = 'jump';
+                this.pose.jumps = 1;
+                this.jumpBufferTimer = 0;
+                this.jumpBufferGauge = null;
+                this.coyoteTimer = 0;
+                wallJumped = true;
             }
 
-            this.pose.state = 'jump';
-            this.pose.jumps = 1;
-            this.jumpBufferTimer = 0;
-            this.jumpBufferGauge = null;
-            this.coyoteTimer = 0;
-            wallJumped = true;
-        }
-
-        // Buffered jump + coyote-time jump window for forgiving edge timing.
-        const canGroundJump = this.pose.grounded || this.coyoteTimer > 0;
-        if (this.jumpBufferTimer > 0 && canGroundJump && !wallJumped) {
-            const canDropThrough = input.down && this.pose.grounded;
-            this.doGroundJump(canDropThrough, this.jumpBufferGauge);
-            this.jumpBufferTimer = 0;
-            this.jumpBufferGauge = null;
-            this.coyoteTimer = 0;
-        } else if (jumpPressed && !wallJumped && this.pose.jumps < MAX_TOTAL_JUMPS) {
-            const nextJumpCount = this.pose.jumps + 1;
-            this.pose.vy = this.getAirJumpForce(nextJumpCount);
-            this.pose.jumps = nextJumpCount;
-            this.pose.state = nextJumpCount >= 3 ? 'triple-jump' : 'double-jump';
-            this.jumpBufferTimer = 0;
-            this.jumpBufferGauge = null;
-        }
-        this.prevJumpInput = input.jump;
+            // Buffered jump + coyote-time jump window for forgiving edge timing.
+            const canGroundJump = this.pose.grounded || this.coyoteTimer > 0;
+            if (this.jumpBufferTimer > 0 && canGroundJump && !wallJumped) {
+                const canDropThrough = input.down && this.pose.grounded;
+                this.doGroundJump(canDropThrough, this.jumpBufferGauge);
+                this.jumpBufferTimer = 0;
+                this.jumpBufferGauge = null;
+                this.coyoteTimer = 0;
+            } else if (jumpPressed && !wallJumped && this.pose.jumps < MAX_TOTAL_JUMPS) {
+                const nextJumpCount = this.pose.jumps + 1;
+                this.pose.vy = this.getAirJumpForce(nextJumpCount);
+                this.pose.jumps = nextJumpCount;
+                this.pose.state = nextJumpCount >= 3 ? 'triple-jump' : 'double-jump';
+                this.jumpBufferTimer = 0;
+                this.jumpBufferGauge = null;
+            }
+            this.prevJumpInput = input.jump;
+        } // End of physical move checks outside of dash
 
         // 4. Integrate Position (X)
         this.pose.x += this.pose.vx * dt;
@@ -446,7 +449,7 @@ export class Controller {
 
         let justStallKicked = false;
         // If we are climbing, force an exit when input/wall contact is lost or we stall vertically.
-        if (!this.pose.grounded && this.pose.state === 'climb') {
+        if (this.dashTimer <= 0 && !this.pose.grounded && this.pose.state === 'climb') {
             const touchingFacingWall = this.isTouchingSolidWall(this.pose.facing);
 
             if (!input.up || !touchingFacingWall) {
@@ -484,7 +487,7 @@ export class Controller {
         }
 
         // Wall Slide / Climb entry & active:
-        if (!this.pose.grounded && this.pose.state !== 'climb' && touchingInputWall && !justStallKicked) {
+        if (this.dashTimer <= 0 && !this.pose.grounded && this.pose.state !== 'climb' && touchingInputWall && !justStallKicked) {
             if (input.up) {
                 this.pose.state = 'climb';
                 this.pose.vy = CLIMB_SPEED;
@@ -501,7 +504,9 @@ export class Controller {
         }
 
         // State updates
-        if (!this.pose.grounded) {
+        if (this.dashTimer > 0) {
+            this.pose.state = 'dash';
+        } else if (!this.pose.grounded) {
             if (this.pose.jumps === 0 && this.coyoteTimer <= 0 && this.pose.state !== 'wall-slide' && this.pose.state !== 'climb') {
                 this.pose.jumps = 1;
             }

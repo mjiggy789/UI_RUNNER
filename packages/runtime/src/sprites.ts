@@ -44,7 +44,8 @@ export class SpriteRenderer {
         // - crouch/slide (including airborne tuck): red override
         const isCrouchLike = state === 'slide' || height < 40;
         let color = brainState === 'seek' ? '#22c55e' : '#7dd3fc';
-        if (isCrouchLike) color = '#ff2244';
+        if (state === 'dash') color = '#ff00ff'; // Intense magenta for dash!
+        else if (isCrouchLike) color = '#ff2244';
 
         ctx.shadowBlur = 15;
         ctx.shadowColor = color;

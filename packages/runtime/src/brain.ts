@@ -137,6 +137,7 @@ const PROGRESS_FLAT_RESET_TICKS = 52;
 const PROGRESS_RESET_COOLDOWN = 0.9;
 const PING_PONG_COMMIT_MIN = 0.65;
 const PING_PONG_COMMIT_MAX = 1.1;
+const SEEK_HARD_CEILING = 20.0;
 
 export interface BrainLogEntry {
     time: string;
@@ -167,6 +168,7 @@ type BrainInput = {
     jump: boolean;
     down: boolean;
     up: boolean;
+    dash: boolean;
     jumpGauge: number | null;
 };
 
@@ -364,6 +366,7 @@ export class Brain {
     ticTacStallTimer: number = 0;
     strandedTimer: number = 0;
     strandedTargetId: number | null = null;
+    seekHardTimer: number = 0;
     ticTacBestY: number = Infinity;
     shaftClimbActive: boolean = false;
     shaftClimbWallDir: -1 | 1 = 1;
@@ -505,52 +508,17 @@ export class Brain {
         this.clearTargetLock();
         this.resetSeekDiagnostics();
 
-        const hit = this.world.query({ x1: x - 5, y1: y - 5, x2: x + 5, y2: y + 5 })
-            .filter((c) => c.kind === 'rect' && c.flags.solid);
-        const preferred = hit.reduce<Collider | null>((best, c) => {
-            if (!best) return c;
-            const cDist = Math.abs(((c.aabb.x1 + c.aabb.x2) / 2) - x) + Math.abs(c.aabb.y1 - y) * 1.2;
-            const bestDist = Math.abs(((best.aabb.x1 + best.aabb.x2) / 2) - x) + Math.abs(best.aabb.y1 - y) * 1.2;
-            return cDist < bestDist ? c : best;
-        }, null);
-
-        const strictPose = this.findManualStandPose(x, y, preferred, true);
-        const snapped = strictPose ?? this.findManualStandPose(x, y, preferred, false);
-        if (!snapped) {
-            this.targetPlatform = null;
-            this.targetX = null;
-            this.manualTargetY = null;
-            this.autoTargetY = null;
-            this.recordLog(
-                'MANUAL_TARGET_REJECT',
-                this.manualLogPose(x, y),
-                `raw=(${Math.round(x)},${Math.round(y)}) no stand pose with ledge>=${MANUAL_SAFE_LEDGE_WIDTH}`
-            );
-            this.currentState = 'idle';
-            return null;
-        }
-
-        this.targetPlatform = snapped.platform;
-        this.lockedTargetId = snapped.platform.id;
-        this.targetX = snapped.x;
-        this.manualTargetY = snapped.y;
+        // Target IS the raw click — no snapping, no platform lock.
+        this.targetX = x;
+        this.manualTargetY = y;
         this.autoTargetY = null;
+        this.targetPlatform = null;
+
         this.recordLog(
             'MANUAL_TARGET',
             this.manualLogPose(x, y),
-            `raw=(${Math.round(x)},${Math.round(y)}) -> snap=(${Math.round(snapped.x)},${Math.round(snapped.y)}) ID${snapped.platform.id} n=(${snapped.normalX},${snapped.normalY}) head=${snapped.requiresHeadroom ? `>=${MANUAL_SAFE_HEADROOM}` : 'relaxed'} ledge=${Math.round(snapped.ledgeWidth)}`
+            `target=(${Math.round(x)},${Math.round(y)})`
         );
-        if (
-            Math.abs(snapped.x - x) > 2
-            || Math.abs(snapped.y - y) > 2
-            || (preferred !== null && preferred.id !== snapped.platform.id)
-        ) {
-            this.recordLog(
-                'MANUAL_TARGET_SNAP',
-                this.manualLogPose(snapped.x, snapped.y),
-                `selected ID${snapped.platform.id} score=${snapped.score.toFixed(1)}`
-            );
-        }
 
         this.currentState = 'seek';
         this.bestProgressDist = Infinity;
@@ -589,7 +557,7 @@ export class Brain {
         this.recentTransitions = [];
         this.breadcrumbTargetPenalty.clear();
         this.loopSignatureHits.clear();
-        return { x: snapped.x, y: snapped.y };
+        return { x, y };
     }
 
     clearManualTarget() {
@@ -639,24 +607,24 @@ export class Brain {
 
     updateManualTarget(x: number, y: number): { x: number; y: number } | null {
         if (!this.manualMode) return null;
-        const preferred = this.lockedTargetId !== null
-            ? this.world.colliders.get(this.lockedTargetId) ?? this.targetPlatform
-            : this.targetPlatform;
-        const strictPose = this.findManualStandPose(x, y, preferred, true);
-        const snapped = strictPose ?? this.findManualStandPose(x, y, preferred, false);
-        if (!snapped) {
-            if (this.targetX !== null && this.manualTargetY !== null) {
-                return { x: this.targetX, y: this.manualTargetY };
-            }
-            return null;
+
+        // Only wake from idle if the position actually changed (avoids frame-spam loops).
+        const moved = (this.targetX !== null && Math.abs(this.targetX - x) > 2)
+            || (this.manualTargetY !== null && Math.abs(this.manualTargetY - y) > 2);
+
+        this.targetX = x;
+        this.manualTargetY = y;
+        this.autoTargetY = null;
+
+        if (moved && this.currentState === 'idle') {
+            this.currentState = 'seek';
+            this.bestProgressDist = Infinity;
+            this.progressStagnationTimer = 0;
+            this.fsmStagnationTimer = 0;
+            this.hitConfirmedTimer = 0;
         }
 
-        this.targetPlatform = snapped.platform;
-        this.lockedTargetId = snapped.platform.id;
-        this.targetX = snapped.x;
-        this.manualTargetY = snapped.y;
-        this.autoTargetY = null;
-        return { x: snapped.x, y: snapped.y };
+        return { x, y };
     }
 
     resetForRespawn() {
@@ -693,6 +661,7 @@ export class Brain {
         this.resetDropIntentTracking();
 
         this.resetSeekDiagnostics();
+        this.seekHardTimer = 0;
         this.navState = 'nav-align';
         this.takeoffZone = null;
         this.patienceTimer = 0;
@@ -1029,10 +998,27 @@ export class Brain {
         if (!isUpwardGoal) return true;
         const isOverheadLockJump = reason.startsWith('overhead-lock');
         const bypassTakeoffGate = isOverheadLockJump && this.takeoffZone === null;
-        if (!bypassTakeoffGate && this.navState !== 'nav-ready') return false;
+        const isGraphTask = this.targetPlatform !== null;
+        if (isGraphTask && !bypassTakeoffGate && this.navState !== 'nav-ready') return false;
         if (!bypassTakeoffGate && this.patienceTimer > 0) return false;
         if (this.takeoffZone) {
-            if (botCenterX < this.takeoffZone.minX || botCenterX > this.takeoffZone.maxX) return false;
+            const insideZone = botCenterX >= this.takeoffZone.minX && botCenterX <= this.takeoffZone.maxX;
+
+            // If the bot is blocked by a wall and trying to get to a zone, allow the jump anyway.
+            // Alignment is a priority, but the environment (obstacles) takes precedence.
+            if (!insideZone) {
+                const wallCheckDist = 12;
+                const tDir = this.takeoffZone.facing;
+                const wallBox = {
+                    x1: tDir > 0 ? pose.x + pose.width : pose.x - wallCheckDist,
+                    y1: pose.y + 4,
+                    x2: tDir > 0 ? pose.x + pose.width + wallCheckDist : pose.x,
+                    y2: pose.y + pose.height - 4
+                };
+                const isBlockedAgainstWall = this.world.query(wallBox).some(c => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay);
+
+                if (!isBlockedAgainstWall) return false;
+            }
         }
 
         const launchHeadProbe: AABB = {
@@ -1836,7 +1822,7 @@ export class Brain {
 
 
     think(pose: Pose, dt: number): BrainInput {
-        const input: BrainInput = { left: false, right: false, jump: false, down: false, up: false, jumpGauge: null };
+        const input: BrainInput = { left: false, right: false, jump: false, down: false, up: false, dash: false, jumpGauge: null };
         let loggedJumpBlocked = false;
         const requestJump = (gauge: number | null = null, reason: string = 'generic') => {
             const botCenterXNow = pose.x + pose.width / 2;
@@ -2208,6 +2194,7 @@ export class Brain {
             this.facingFlipCount = 0;
             this.lastFacingSeen = 0;
             this.loopWarned = false;
+            this.seekHardTimer = 0;
             this.resetProgressTracking();
         }
 
@@ -2229,6 +2216,67 @@ export class Brain {
         }
 
         if (this.currentState === 'seek') {
+            // === Anti-Stall Layer 1: null-target eject ===
+            // If we're in seek but have no target coordinates, we are deadlocked.
+            // Drop to idle immediately so pickNewTarget runs next tick.
+            if (targetX === null) {
+                this.recordLog('SEEK_NULL_EJECT', pose, 'in seek with null targetX — forcing idle');
+                this.currentState = 'idle';
+                this.clearTargetLock();
+                this.targetPlatform = null;
+                this.autoTargetY = null;
+                this.bestProgressDist = Infinity;
+                this.progressStagnationTimer = 0;
+                this.fsmStagnationTimer = 0;
+                this.seekHardTimer = 0;
+                this.navState = 'nav-align';
+                this.takeoffZone = null;
+                this.patienceTimer = 0;
+                this.resetManeuverTracking();
+                this.pickNewTarget(pose);
+                targetX = this.targetX;
+                targetY = this.getTargetY();
+                heightDiff = targetY !== null ? botFeetY - targetY : 0;
+                debugSnapshot.state = this.currentState;
+                debugSnapshot.targetX = targetX;
+                debugSnapshot.targetY = targetY;
+                debugSnapshot.targetDx = targetX !== null ? targetX - botCenterX : null;
+                debugSnapshot.heightDiff = targetY !== null ? heightDiff : null;
+            }
+
+            // === Anti-Stall Layer 2: hard ceiling watchdog ===
+            // Absolute upper bound on how long a single seek can run.
+            // If we exceed this, something is fundamentally wrong — force a full reset.
+            this.seekHardTimer += dt;
+            if (this.seekHardTimer > SEEK_HARD_CEILING) {
+                this.recordLog('SEEK_HARD_CEILING', pose, `${this.seekHardTimer.toFixed(1)}s in seek — hard reset`);
+                this.currentState = 'idle';
+                this.clearTargetLock();
+                this.targetPlatform = null;
+                this.targetX = null;
+                this.autoTargetY = null;
+                this.bestProgressDist = Infinity;
+                this.progressStagnationTimer = 0;
+                this.fsmStagnationTimer = 0;
+                this.seekHardTimer = 0;
+                this.navState = 'nav-align';
+                this.takeoffZone = null;
+                this.patienceTimer = 0;
+                this.resetManeuverTracking();
+                this.resetProgressTracking();
+                this.resetShaftClimbState();
+                this.resetTicTacState();
+                this.pickNewTarget(pose);
+                targetX = this.targetX;
+                targetY = this.getTargetY();
+                heightDiff = targetY !== null ? botFeetY - targetY : 0;
+                debugSnapshot.state = this.currentState;
+                debugSnapshot.targetX = targetX;
+                debugSnapshot.targetY = targetY;
+                debugSnapshot.targetDx = targetX !== null ? targetX - botCenterX : null;
+                debugSnapshot.heightDiff = targetY !== null ? heightDiff : null;
+            }
+
             if (targetX !== null) {
                 const targetDy = targetY !== null ? Math.round(botFeetY - targetY) : null;
                 const targetDx = Math.round(targetX - botCenterX);
@@ -2256,6 +2304,10 @@ export class Brain {
                     } else {
                         if (this.manualMode) {
                             this.recordLog('MANUAL_GIVE_UP', pose, `flat progress scalar after ${this.retryCount} retries`);
+                            this.clearManualTarget();
+                            this.debugSnapshot = debugSnapshot;
+                            this.emitTransitionLogs(pose, input);
+                            return input;
                         }
                         this.forceProgressResetAndReselect(pose, 'progress-scalar-flat');
                         this.debugSnapshot = debugSnapshot;
@@ -2303,6 +2355,10 @@ export class Brain {
                     } else {
                         if (this.manualMode) {
                             this.recordLog('MANUAL_GIVE_UP', pose, `stalled at manual target after ${this.retryCount} retries`);
+                            this.clearManualTarget();
+                            this.debugSnapshot = debugSnapshot;
+                            this.emitTransitionLogs(pose, input);
+                            return input;
                         }
                         this.retryCount++;
                         this.recordLog('PLAN_FAILURE', pose, `${reason} t=${Math.max(this.progressStagnationTimer, this.fsmStagnationTimer).toFixed(1)} dist=${Math.round(currentDist)} lock=${this.lockedTargetId ?? '-'}`);
@@ -2461,95 +2517,111 @@ export class Brain {
                             }
                         }
                     }
-
-                    if (this.navState === 'nav-approach') {
-                        if (this.approachPhase === 'backup' && this.approachX !== null) {
-                            navTargetX = this.approachX;
-                            if (Math.abs(botCenterX - this.approachX) < 22) {
-                                this.approachPhase = 'charge';
-                                this.approachX = null;
-                                this.recordLog('NAV_CHARGE', pose, 'run-up complete');
-                            }
-                        } else if (this.takeoffZone) {
-                            if (botCenterX < this.takeoffZone.minX) {
-                                navTargetX = this.takeoffZone.minX + 4;
-                            } else if (botCenterX > this.takeoffZone.maxX) {
-                                navTargetX = this.takeoffZone.maxX - 4;
-                            } else {
-                                this.navState = 'nav-ready';
-                                this.navSlipTimer = 0;
-                                this.patienceTimer = Math.max(this.patienceTimer, 0.12);
-                                this.recordLog('NAV_READY', pose, `entered tz phase=${this.approachPhase}`);
-                            }
-                        } else {
-                            navTargetX = smartTargetX;
-                        }
+                } else {
+                    // Coordinate target or direct targeting (no platform node)
+                    // We skip the graph alignment pipeline and immediately declare "nav-ready"
+                    if (this.navState !== 'nav-ready') {
+                        this.navState = 'nav-ready';
+                        this.takeoffZone = null;
+                        this.patienceTimer = 0;
+                        this.recordLog('NAV_READY_COORD', pose, `target=(${Math.round(targetX)},${Math.round(targetY ?? 0)})`);
                     }
+                }
 
-                    if (this.navState === 'nav-ready') {
-                        if (this.takeoffZone) {
-                            const jumpDir = this.takeoffZone.facing;
-                            // Target the FAR side of the zone to maintain momentum during charge
-                            navTargetX = jumpDir > 0 ? this.takeoffZone.maxX - 5 : this.takeoffZone.minX + 5;
+                if (this.navState === 'nav-approach') {
+                    if (this.approachPhase === 'backup' && this.approachX !== null) {
+                        navTargetX = this.approachX;
+                        const backupDir = this.approachX > botCenterX ? 1 : -1;
+                        const wallCheckDist = 12;
+                        const wallBox = {
+                            x1: backupDir > 0 ? pose.x + pose.width : pose.x - wallCheckDist,
+                            y1: pose.y + 4,
+                            x2: backupDir > 0 ? pose.x + pose.width + wallCheckDist : pose.x,
+                            y2: pose.y + pose.height - 4
+                        };
+                        const isBlocked = this.world.query(wallBox).some(c => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay);
 
-                            const outsideZone =
-                                botCenterX < this.takeoffZone.minX - NAV_ZONE_EXIT_MARGIN
-                                || botCenterX > this.takeoffZone.maxX + NAV_ZONE_EXIT_MARGIN;
-                            if (outsideZone) {
-                                this.navSlipTimer += dt;
-                                if (this.navSlipTimer >= NAV_ZONE_SLIP_GRACE) {
-                                    this.navSlipCount++;
-                                    if (this.navSlipCount > 3) {
-                                        this.recordLog('NAV_SLIP_LOOP', pose, `count=${this.navSlipCount}`);
-                                        this.invalidateActiveManeuver(pose, 'slip-loop', 8000);
-                                        this.reroute(pose, 'slip-loop');
-                                        return input;
-                                    }
-                                    this.navState = 'nav-approach';
-                                    this.navSlipTimer = 0;
-                                    this.recordLog('NAV_SLIP', pose, `fell out of tz`);
+                        if (Math.abs(botCenterX - this.approachX) < 22 || isBlocked) {
+                            this.approachPhase = 'charge';
+                            this.approachX = null;
+                            this.recordLog('NAV_CHARGE', pose, isBlocked ? 'run-up blocked by wall' : 'run-up complete');
+                        }
+                    } else if (this.takeoffZone) {
+                        if (botCenterX < this.takeoffZone.minX) {
+                            navTargetX = this.takeoffZone.minX + 4;
+                        } else if (botCenterX > this.takeoffZone.maxX) {
+                            navTargetX = this.takeoffZone.maxX - 4;
+                        } else {
+                            this.navState = 'nav-ready';
+                            this.navSlipTimer = 0;
+                            this.patienceTimer = Math.max(this.patienceTimer, 0.12);
+                            this.recordLog('NAV_READY', pose, `entered tz phase=${this.approachPhase}`);
+                        }
+                    } else {
+                        navTargetX = smartTargetX;
+                    }
+                }
+
+                if (this.navState === 'nav-ready') {
+                    if (this.takeoffZone) {
+                        const jumpDir = this.takeoffZone.facing;
+                        // Target the FAR side of the zone to maintain momentum during charge
+                        navTargetX = jumpDir > 0 ? this.takeoffZone.maxX - 5 : this.takeoffZone.minX + 5;
+
+                        const outsideZone =
+                            botCenterX < this.takeoffZone.minX - NAV_ZONE_EXIT_MARGIN
+                            || botCenterX > this.takeoffZone.maxX + NAV_ZONE_EXIT_MARGIN;
+                        if (outsideZone) {
+                            this.navSlipTimer += dt;
+                            if (this.navSlipTimer >= NAV_ZONE_SLIP_GRACE) {
+                                this.navSlipCount++;
+                                if (this.navSlipCount > 3) {
+                                    this.recordLog('NAV_SLIP_LOOP', pose, `count=${this.navSlipCount}`);
+                                    this.invalidateActiveManeuver(pose, 'slip-loop', 8000);
+                                    this.reroute(pose, 'slip-loop');
+                                    return input;
                                 }
-                            } else {
+                                this.navState = 'nav-approach';
                                 this.navSlipTimer = 0;
-                                const landingBand = this.getActiveLandingBand();
-                                const launchHeadProbe: AABB = {
-                                    x1: pose.x + 2,
-                                    y1: pose.y - 44,
-                                    x2: pose.x + pose.width - 2,
-                                    y2: pose.y - 2
-                                };
-                                const launchHeadBlocked = this.world.query(launchHeadProbe)
-                                    .some((c) => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay);
-
-                                const jumpDir = this.takeoffZone.facing;
-                                const isChargingAtSpeed = (jumpDir > 0 && pose.vx > 100) || (jumpDir < 0 && pose.vx < -100);
-
-                                if (isChargingAtSpeed) {
-                                    this.patienceTimer = 0;
-                                    // We do not require dynamic LOS here, only that the head is clear and we are settled.
-                                    // If the jump fails physically, edge invalidation correctly blacklists the path.
-                                } else if (Math.abs(pose.vx) < 50 && !launchHeadBlocked) {
-                                    this.patienceTimer -= dt;
-                                } else {
-                                    this.patienceTimer = Math.max(this.patienceTimer, 0.08);
-                                }
-
-                                if (this.patienceTimer > 0) {
-                                    input.jump = false;
-                                    input.jumpGauge = null;
-                                }
+                                this.recordLog('NAV_SLIP', pose, `fell out of tz`);
                             }
                         } else {
+                            this.navSlipTimer = 0;
+                            const landingBand = this.getActiveLandingBand();
+                            const launchHeadProbe: AABB = {
+                                x1: pose.x + 2,
+                                y1: pose.y - 44,
+                                x2: pose.x + pose.width - 2,
+                                y2: pose.y - 2
+                            };
+                            const launchHeadBlocked = this.world.query(launchHeadProbe)
+                                .some((c) => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay);
+
+                            const jumpDir = this.takeoffZone.facing;
+                            const isChargingAtSpeed = (jumpDir > 0 && pose.vx > 100) || (jumpDir < 0 && pose.vx < -100);
+
+                            if (isChargingAtSpeed) {
+                                this.patienceTimer = 0;
+                                // We do not require dynamic LOS here, only that the head is clear and we are settled.
+                                // If the jump fails physically, edge invalidation correctly blacklists the path.
+                            } else if (Math.abs(pose.vx) < 50 && !launchHeadBlocked) {
+                                this.patienceTimer -= dt;
+                            } else {
+                                this.patienceTimer = Math.max(this.patienceTimer, 0.08);
+                            }
+
+                            if (this.patienceTimer > 0) {
+                                input.jump = false;
+                                input.jumpGauge = null;
+                            }
+                        }
+                    } else {
+                        // No takeoff zone. For platform targets this means we need to realign
+                        // with the graph. For coordinate targets (no platform), we're already
+                        // in free-nav mode — stay in nav-ready so movement proceeds normally.
+                        if (this.targetPlatform) {
                             this.navState = 'nav-align';
                         }
-                    }
-                } else {
-                    this.navState = 'nav-align';
-                    this.navSlipTimer = 0;
-                    navTargetX = smartTargetX;
-                    if (this.approachPhase !== 'direct') {
-                        this.approachPhase = 'direct';
-                        this.approachX = null;
                     }
                 }
 
@@ -2601,30 +2673,51 @@ export class Brain {
                     }
                 }
 
-                if (!this.shaftClimbActive && narrowShaftCorridor && targetY !== null && heightDiff > 20) {
-                    const targetDir: -1 | 1 = targetX >= botCenterX ? 1 : -1;
-                    const preferRight = targetDir > 0;
-                    const wallDir = preferRight
-                        ? (narrowShaftCorridor.rightDist <= narrowShaftCorridor.leftDist ? 1 : -1)
-                        : (narrowShaftCorridor.leftDist <= narrowShaftCorridor.rightDist ? -1 : 1);
-                    this.shaftClimbActive = true;
-                    this.shaftClimbWallDir = wallDir;
-                    this.shaftCorridorLeftX = narrowShaftCorridor.leftWallX;
-                    this.shaftCorridorRightX = narrowShaftCorridor.rightWallX;
-                    this.shaftHopTimer = 0;
-                    this.shaftStallTimer = 0;
-                    this.shaftBestY = pose.y;
-                    this.recordLog(
-                        'SHAFT_CLIMB_START',
-                        pose,
-                        `w=${Math.round(narrowShaftCorridor.width)} dir=${wallDir > 0 ? 'R' : 'L'}`
-                    );
+                if (!this.shaftClimbActive && !this.ticTacActive && narrowShaftCorridor && targetY !== null && heightDiff > 20) {
+                    const canTicTacAlso = ticTacCorridor !== null && heightDiff > TIC_TAC_MIN_HEIGHT && !pose.grounded;
+
+                    let doShaftClimb = true;
+                    if (canTicTacAlso) {
+                        if (Math.random() < 0.65) {
+                            doShaftClimb = false;
+                        }
+                    }
+
+                    if (doShaftClimb) {
+                        const targetDir: -1 | 1 = targetX >= botCenterX ? 1 : -1;
+                        const preferRight = targetDir > 0;
+                        const chosenWallDir = preferRight
+                            ? (narrowShaftCorridor.rightDist <= narrowShaftCorridor.leftDist ? 1 : -1)
+                            : (narrowShaftCorridor.leftDist <= narrowShaftCorridor.rightDist ? -1 : 1);
+                        this.shaftClimbActive = true;
+                        this.shaftClimbWallDir = chosenWallDir;
+                        this.shaftCorridorLeftX = narrowShaftCorridor.leftWallX;
+                        this.shaftCorridorRightX = narrowShaftCorridor.rightWallX;
+                        this.shaftHopTimer = 0;
+                        this.shaftStallTimer = 0;
+                        this.shaftBestY = pose.y;
+                        this.recordLog(
+                            'SHAFT_CLIMB_START',
+                            pose,
+                            `w=${Math.round(narrowShaftCorridor.width)} dir=${chosenWallDir > 0 ? 'R' : 'L'}`
+                        );
+                    } else {
+                        const initDir = wallDir !== 0
+                            ? (wallDir === 1 ? -1 : 1)
+                            : (targetX !== null && targetX >= botCenterX ? 1 : -1);
+                        this.ticTacActive = true;
+                        this.ticTacDir = initDir as -1 | 1;
+                        this.ticTacWallHoldTimer = 0;
+                        this.ticTacJumpTimer = 0;
+                        this.ticTacBestY = heightDiff > 0 ? Infinity : -Infinity;
+                        this.recordLog('TIC_TAC_START', pose, `dir=${initDir > 0 ? 'R' : 'L'} gap=${ticTacCorridor ? Math.round(ticTacCorridor.width) : '-'} mode=up (chosen over shaft-climb)`);
+                    }
                 }
 
-                const isDownwardTicTac = targetY !== null && heightDiff < -TIC_TAC_MIN_HEIGHT && this.activeManeuver?.action === 'wall-slide';
+                const isDownwardTicTac = targetY !== null && heightDiff < -TIC_TAC_MIN_HEIGHT && (this.activeManeuver?.action === 'wall-slide' || this.ticTacActive);
                 const ticTacEligible =
                     targetY !== null &&
-                    (heightDiff > TIC_TAC_MIN_HEIGHT || isDownwardTicTac) &&
+                    (heightDiff > TIC_TAC_MIN_HEIGHT || isDownwardTicTac || this.ticTacActive) &&
                     !pose.grounded &&
                     !this.shaftClimbActive &&
                     (ticTacCorridor !== null || this.ticTacPersistTimer > 0);
@@ -2757,8 +2850,8 @@ export class Brain {
                         this.resetTicTacState();
                         ticTacHandled = false;
                     }
-                } else if (this.ticTacActive && (pose.grounded || heightDiff < TIC_TAC_MIN_HEIGHT * 0.5 || this.ticTacPersistTimer <= 0)) {
-                    this.recordLog('TIC_TAC_END', pose, `grounded=${pose.grounded ? 'y' : 'n'} h=${Math.round(heightDiff)}`);
+                } else if (this.ticTacActive && (pose.grounded || (this.ticTacPersistTimer <= 0 && ticTacCorridor === null))) {
+                    this.recordLog('TIC_TAC_END', pose, `grounded=${pose.grounded ? 'y' : 'n'} h=${Math.round(heightDiff)} corridor=${ticTacCorridor ? 'y' : 'n'}`);
                     this.resetTicTacState();
                     debugSnapshot.ticTacActive = false;
                     debugSnapshot.ticTacDir = 0;
@@ -2776,14 +2869,14 @@ export class Brain {
                         if (wallDir > 0) input.right = true;
                         else input.left = true;
 
-                        if (pose.state === 'wall-slide') {
-                            const climbCeilingBlocked = this.world.query({
-                                x1: pose.x + 4,
-                                y1: pose.y - 14,
-                                x2: pose.x + pose.width - 4,
-                                y2: pose.y - 2
-                            }).some(c => c.flags.solid && !c.flags.oneWay);
+                        const climbCeilingBlocked = this.world.query({
+                            x1: pose.x + 4,
+                            y1: pose.y - 14,
+                            x2: pose.x + pose.width - 4,
+                            y2: pose.y - 2
+                        }).some(c => c.flags.solid && !c.flags.oneWay);
 
+                        if (pose.state === 'wall-slide') {
                             const preferClimb = heightDiff > WALL_CLIMB_PREFER_HEIGHT && !climbCeilingBlocked;
                             const forceHop = this.wallSlideTimer >= WALL_SLIDE_FORCE_HOP_TIME && pose.vy >= 20;
                             if (preferClimb) {
@@ -2798,14 +2891,21 @@ export class Brain {
                                 this.wallDecisionTimer = WALL_DECISION_COOLDOWN_FAST;
                             }
                         } else if (pose.state === 'climb') {
-                            // Break out with a jump if we stall vertically (vy >= 0 means gravity pulled us down or we hit ceiling)
+                            // Continue jumping up if we stall vertically but still want height
                             if (heightDiff > 70 && pose.vy >= 0 && this.wallDecisionTimer <= 0) {
-                                input.up = false;
-                                requestJump(null, 'climb-stall-hop');
-                                this.wallDecisionTimer = WALL_DECISION_COOLDOWN;
-                            } else if (heightDiff > 70) {
+                                if (climbCeilingBlocked) {
+                                    input.up = false; // kick away from ceiling
+                                    requestJump(null, 'climb-stall-ceiling-hop');
+                                    this.wallDecisionTimer = Math.max(0.2, WALL_DECISION_COOLDOWN);
+                                } else {
+                                    input.up = true; // explicitly jump up the wall again
+                                    requestJump(null, 'climb-continue-hop');
+                                    this.wallDecisionTimer = WALL_DECISION_COOLDOWN;
+                                }
+                            } else if (heightDiff > 70 && !climbCeilingBlocked) {
                                 input.up = true; // keep climbing
                             } else if (this.wallDecisionTimer <= 0) {
+                                input.up = false; // explicitly ensure we kick off to break out
                                 requestJump(null, 'climb-breakout-hop');
                                 this.wallDecisionTimer = WALL_DECISION_COOLDOWN;
                             }
@@ -2814,373 +2914,403 @@ export class Brain {
                             navTargetX = (navTargetX + wallBiasX) / 2;
                         }
                     }
-                }
 
-                // Special launch behavior for tall wall-column subtargets:
-                // run at the face and trigger jump quickly to start wall-slide/climb.
-                const wallLaunchAllowed = this.navState === 'nav-ready';
-                if (!ticTacHandled && targetIsWallStep && this.targetPlatform && pose.grounded && wallLaunchAllowed && !input.down) {
-                    const faceX = targetX > botCenterX
-                        ? this.targetPlatform.aabb.x1 - WALL_STEP_FACE_OFFSET
-                        : this.targetPlatform.aabb.x2 + WALL_STEP_FACE_OFFSET;
-                    navTargetX = faceX;
-                    const launchDir = faceX > botCenterX ? 1 : -1;
-                    const nearLaunch = Math.abs(faceX - botCenterX) <= WALL_STEP_LAUNCH_DIST;
-                    const carryingSpeed = pose.vx * launchDir >= WALL_STEP_LAUNCH_MIN_VX;
-                    const headClear = !this.world.query({
-                        x1: pose.x + 2,
-                        y1: pose.y - 36,
-                        x2: pose.x + pose.width - 2,
-                        y2: pose.y - 2
-                    }).some(c => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay);
-
-                    if (nearLaunch && carryingSpeed && headClear && this.wallDecisionTimer <= 0) {
-                        requestJump(null, 'wall-step-launch');
-                        this.wallDecisionTimer = WALL_DECISION_COOLDOWN_FAST;
-                    }
-                }
-
-                // Final Horizontal Movement
-                const isPanicState = this.facingFlipCount > 4 || pose.state === 'slide' || pose.state === 'wall-slide' || pose.state === 'climb';
-                if (isPanicState) {
-                    this.panicLatchTimer = 0.6;
-                }
-
-                debugSnapshot.navTargetX = navTargetX;
-                const moveDx = navTargetX - botCenterX;
-                debugSnapshot.moveDx = moveDx;
-                if (!ticTacHandled) {
-                    const nearAndLevel = pose.grounded && this.targetPlatform && Math.abs(moveDx) < 60 && Math.abs(heightDiff) < 40;
-                    const speedDeadzoneBoost = pose.grounded ? Math.min(14, Math.abs(pose.vx) * 0.03) : 0;
-                    let deadzone = (nearAndLevel ? STEER_DEADZONE_NEAR : STEER_DEADZONE_BASE) + speedDeadzoneBoost;
-                    if (pose.state === 'slide') deadzone = Math.max(deadzone, STEER_DEADZONE_SLIDE);
-                    const stickyBand = deadzone + STEER_COMMIT_STICKY_EXTRA;
-                    debugSnapshot.deadzone = deadzone;
-                    debugSnapshot.stickyBand = stickyBand;
-                    debugSnapshot.shouldMoveHorizontally = shouldMoveHorizontally;
-
-                    let moveDir: -1 | 0 | 1 = 0;
-                    const commitActive = this.moveCommitDir !== 0 && this.moveCommitTimer > 0;
-                    const commitBlocked = commitActive
-                        ? this.isSteerDirectionBlocked(pose, this.moveCommitDir as -1 | 1)
-                        : false;
-                    if (shouldMoveHorizontally) {
-                        if (commitActive && !commitBlocked) {
-                            // During commit windows, keep one direction unless physically blocked.
-                            moveDir = this.moveCommitDir;
-                        } else if (this.moveCommitDir !== 0 && this.moveCommitTimer > 0 && Math.abs(moveDx) <= stickyBand) {
-                            // Keep current commitment while crossing center to prevent jitter flips.
-                            moveDir = this.moveCommitDir;
-                        } else if (Math.abs(moveDx) > deadzone) {
-                            moveDir = moveDx > 0 ? 1 : -1;
-                        }
-
-                        // Trajectory Commitment: if airborne and committed, suppress braking/reversal
-                        if (!pose.grounded && this.maneuverCommitted && moveDir !== 0) {
-                            const currentDir = pose.vx > 20 ? 1 : (pose.vx < -20 ? -1 : 0);
-                            if (currentDir !== 0 && moveDir !== currentDir) {
-                                // We are trying to reverse direction in air.
-                                // If we are just overshooting slightly, let it fly to preserve momentum.
-                                const overshoot = (currentDir > 0 && moveDx < -20) || (currentDir < 0 && moveDx > 20);
-                                if (overshoot && Math.abs(moveDx) < 80) {
-                                    moveDir = currentDir; // Maintain course
-                                } else if (overshoot) {
-                                    moveDir = 0; // Just drift, don't hard brake
-                                }
-                            }
-                        }
-                    }
-
-                    if (moveDir !== 0) {
-                        const flippingNearCenter = this.moveCommitDir !== 0
-                            && moveDir !== this.moveCommitDir
-                            && this.moveCommitTimer > 0
-                            && Math.abs(moveDx) < STEER_COMMIT_FLIP_GUARD;
-                        const enforceCommit = commitActive && !commitBlocked && moveDir !== this.moveCommitDir;
-                        if (enforceCommit || flippingNearCenter) {
-                            moveDir = this.moveCommitDir;
-                        } else if (moveDir !== this.moveCommitDir) {
-                            this.moveCommitDir = moveDir;
-                            let nextCommit = nearAndLevel ? STEER_COMMIT_HOLD_NEAR : STEER_COMMIT_HOLD_BASE;
-                            if (this.panicLatchTimer > 0) {
-                                nextCommit = Math.max(nextCommit, 0.3);
-                            }
-                            this.moveCommitTimer = Math.max(this.moveCommitTimer, nextCommit);
-                        }
-                    } else if (this.moveCommitTimer <= 0) {
-                        this.moveCommitDir = 0;
-                    }
-
-                    if (this.panicLatchTimer > 0 && pose.grounded && pose.groundedId !== null) {
-                        const currentNode = this.graph.nodes.get(pose.groundedId);
-                        const hasExits = currentNode && currentNode.edges.some(e => e.invalidUntil <= performance.now());
-                        if (!hasExits) {
-                            moveDir = 0;
-                            this.moveCommitDir = 0;
-                            this.moveCommitTimer = 0;
-                        }
-                    }
-
-                    if (moveDir > 0) input.right = true;
-                    else if (moveDir < 0) input.left = true;
-
-                    // Takeoff Slip Guard: when in nav-ready, maintain charging direction even if we slightly overshoot the center.
-                    if (this.navState === 'nav-ready' && this.takeoffZone) {
-                        const chargeDir = this.takeoffZone.facing;
-                        const inZone = botCenterX >= this.takeoffZone.minX - 4 && botCenterX <= this.takeoffZone.maxX + 4;
-                        if (inZone) {
-                            input.left = chargeDir < 0;
-                            input.right = chargeDir > 0;
-                            moveDir = chargeDir as -1 | 1;
-                        }
-                    }
-                    debugSnapshot.moveDir = moveDir;
-
-                    if (
-                        moveDir === 0
-                        && this.approachPhase !== 'backup'
-                        && this.approachPhase !== 'charge'
-                        && this.moveCommitTimer <= 0
-                    ) {
-                        this.moveCommitTimer = 0;
-                    }
-
-                    // If the target is almost straight above us and within a reasonable jump band,
-                    // suppress lateral dithering and commit to a vertical ascent attempt.
-                    const overheadAligned =
-                        pose.grounded &&
-                        targetX !== null &&
-                        targetY !== null &&
-                        this.approachPhase === 'direct' &&
-                        heightDiff > OVERHEAD_LOCK_MIN_HEIGHT &&
-                        heightDiff < OVERHEAD_LOCK_MAX_HEIGHT &&
-                        Math.abs(targetX - botCenterX) <= OVERHEAD_LOCK_MAX_DX;
-                    debugSnapshot.overheadAligned = overheadAligned;
-                    if (overheadAligned) {
-                        const verticalCeilingQuery = {
+                    // Special launch behavior for tall wall-column subtargets:
+                    // run at the face and trigger jump quickly to start wall-slide/climb.
+                    const wallLaunchAllowed = this.navState === 'nav-ready';
+                    if (!ticTacHandled && targetIsWallStep && this.targetPlatform && pose.grounded && wallLaunchAllowed && !input.down) {
+                        const faceX = targetX > botCenterX
+                            ? this.targetPlatform.aabb.x1 - WALL_STEP_FACE_OFFSET
+                            : this.targetPlatform.aabb.x2 + WALL_STEP_FACE_OFFSET;
+                        navTargetX = faceX;
+                        const launchDir = faceX > botCenterX ? 1 : -1;
+                        const nearLaunch = Math.abs(faceX - botCenterX) <= WALL_STEP_LAUNCH_DIST;
+                        const carryingSpeed = pose.vx * launchDir >= WALL_STEP_LAUNCH_MIN_VX;
+                        const headClear = !this.world.query({
                             x1: pose.x + 2,
-                            y1: pose.y - 40,
+                            y1: pose.y - 36,
                             x2: pose.x + pose.width - 2,
                             y2: pose.y - 2
-                        };
-                        const hasHardCeiling = this.world.query(verticalCeilingQuery)
-                            .some(c => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay);
-                        const insideTakeoffZone = this.takeoffZone === null
-                            || (botCenterX >= this.takeoffZone.minX && botCenterX <= this.takeoffZone.maxX);
-                        const canCommitVerticalLock = this.takeoffZone === null
-                            || this.navState === 'nav-ready'
-                            || (this.navState === 'nav-approach' && insideTakeoffZone);
-                        debugSnapshot.overheadProbe = verticalCeilingQuery;
-                        debugSnapshot.overheadBlocked = hasHardCeiling;
-                        if (!hasHardCeiling && canCommitVerticalLock) {
-                            input.left = false;
-                            input.right = false;
-                            this.moveCommitDir = 0;
-                            this.moveCommitTimer = 0;
+                        }).some(c => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay);
 
-                            const canVerticalJumpPlan = this.navState === 'nav-ready' || this.takeoffZone === null;
-                            if (canVerticalJumpPlan && !input.jump && !input.down) {
-                                const gauge = this.computeGaugedJump(pose, targetX - botCenterX, heightDiff);
-                                if (gauge !== null) requestJump(gauge, 'overhead-lock-jump');
-                                else requestJump(null, 'overhead-lock-full-jump');
-                            }
+                        if (nearLaunch && carryingSpeed && headClear && this.wallDecisionTimer <= 0) {
+                            requestJump(null, 'wall-step-launch');
+                            this.wallDecisionTimer = WALL_DECISION_COOLDOWN_FAST;
                         }
                     }
 
-                    // --- Ceiling Entrapment Guardrail ---
-                    // If we need to go up but a ceiling is blocking the jump, force horizontal movement to find an opening.
-                    const isStalledUnderCeiling = targetY !== null && heightDiff > 15 && !input.jump;
-                    if (isStalledUnderCeiling && pose.grounded) {
-                        const standingHeadY = pose.y + pose.height - 40;
-                        const headProbe = { x1: pose.x + 2, y1: standingHeadY - 14, x2: pose.x + pose.width - 2, y2: pose.y - 2 };
-                        const ceilingAbove = this.world.query(headProbe).some(c => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay);
-                        const preferredEscape = this.moveCommitDir !== 0
-                            ? this.moveCommitDir
-                            : (targetX > botCenterX ? 1 : -1);
-                        const arcLeft = this.probeCeilingArcClearance(pose, -1);
-                        const arcRight = this.probeCeilingArcClearance(pose, 1);
-                        const preferredArc = preferredEscape > 0 ? arcRight : arcLeft;
-                        const arcBlocked = preferredArc.blocked;
+                    // Final Horizontal Movement
+                    const isPanicState = this.facingFlipCount > 4 || pose.state === 'slide' || pose.state === 'wall-slide' || pose.state === 'climb';
+                    if (isPanicState) {
+                        this.panicLatchTimer = 0.6;
+                    }
 
-                        // Also consider we are blocked if we keep bonking
-                        const forceEscape = ceilingAbove || arcBlocked || (this.ceilingJumpSuppressTimer > 0.1 && this.ceilingBonkCount > 0);
+                    debugSnapshot.navTargetX = navTargetX;
+                    const moveDx = navTargetX - botCenterX;
+                    debugSnapshot.moveDx = moveDx;
+                    if (!ticTacHandled) {
+                        const nearAndLevel = pose.grounded && this.targetPlatform && Math.abs(moveDx) < 60 && Math.abs(heightDiff) < 40;
+                        const speedDeadzoneBoost = pose.grounded ? Math.min(14, Math.abs(pose.vx) * 0.03) : 0;
+                        let deadzone = (nearAndLevel ? STEER_DEADZONE_NEAR : STEER_DEADZONE_BASE) + speedDeadzoneBoost;
+                        if (pose.state === 'slide') deadzone = Math.max(deadzone, STEER_DEADZONE_SLIDE);
+                        const stickyBand = deadzone + STEER_COMMIT_STICKY_EXTRA;
+                        debugSnapshot.deadzone = deadzone;
+                        debugSnapshot.stickyBand = stickyBand;
+                        debugSnapshot.shouldMoveHorizontally = shouldMoveHorizontally;
 
-                        debugSnapshot.ceilingHeadProbe = headProbe;
-                        debugSnapshot.ceilingBlocked = ceilingAbove;
-                        debugSnapshot.ceilingArcBlocked = arcBlocked;
-                        debugSnapshot.ceilingArcClearanceLeft = arcLeft.clearance;
-                        debugSnapshot.ceilingArcClearanceRight = arcRight.clearance;
+                        let moveDir: -1 | 0 | 1 = 0;
+                        const commitActive = this.moveCommitDir !== 0 && this.moveCommitTimer > 0;
+                        const commitBlocked = commitActive
+                            ? this.isSteerDirectionBlocked(pose, this.moveCommitDir as -1 | 1)
+                            : false;
+                        if (shouldMoveHorizontally) {
+                            if (commitActive && !commitBlocked) {
+                                // During commit windows, keep one direction unless physically blocked.
+                                moveDir = this.moveCommitDir;
+                            } else if (this.moveCommitDir !== 0 && this.moveCommitTimer > 0 && Math.abs(moveDx) <= stickyBand) {
+                                // Keep current commitment while crossing center to prevent jitter flips.
+                                moveDir = this.moveCommitDir;
+                            } else if (Math.abs(moveDx) > deadzone) {
+                                moveDir = moveDx > 0 ? 1 : -1;
+                            }
 
-                        if (forceEscape) {
-                            if (arcBlocked && this.ceilingArcInvalidateTimer <= 0) {
-                                const reason = 'ceiling-arc-block';
-                                if (this.activeManeuver && this.activeManeuverFromId !== null) {
-                                    this.invalidateActiveManeuver(pose, reason, 9000);
-                                } else if (pose.groundedId !== null && this.targetPlatform) {
-                                    this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, reason, 9000);
+                            // Trajectory Commitment: if airborne and committed, suppress braking/reversal
+                            if (!pose.grounded && this.maneuverCommitted && moveDir !== 0) {
+                                const currentDir = pose.vx > 20 ? 1 : (pose.vx < -20 ? -1 : 0);
+                                if (currentDir !== 0 && moveDir !== currentDir) {
+                                    // We are trying to reverse direction in air.
+                                    // If we are just overshooting slightly, let it fly to preserve momentum.
+                                    const overshoot = (currentDir > 0 && moveDx < -20) || (currentDir < 0 && moveDx > 20);
+                                    if (overshoot && Math.abs(moveDx) < 80) {
+                                        moveDir = currentDir; // Maintain course
+                                    } else if (overshoot) {
+                                        moveDir = 0; // Just drift, don't hard brake
+                                    }
                                 }
-                                this.ceilingArcInvalidateTimer = CEILING_ARC_INVALIDATE_COOLDOWN;
-                                this.recordLog(
-                                    'CEILING_ARC_BLOCK',
-                                    pose,
-                                    `L=${arcLeft.clearance.toFixed(2)} R=${arcRight.clearance.toFixed(2)} pref=${preferredEscape > 0 ? 'R' : 'L'}`
-                                );
-                            }
-
-                            let escapeDir: -1 | 1 = (this.ceilingEscapeTimer > 0 && this.ceilingEscapeDir !== 0
-                                ? this.ceilingEscapeDir
-                                : preferredEscape) as -1 | 1;
-
-                            // Bias toward direction with higher free-arc clearance.
-                            if (arcRight.clearance > arcLeft.clearance + 0.08) escapeDir = 1;
-                            else if (arcLeft.clearance > arcRight.clearance + 0.08) escapeDir = -1;
-
-                            const wallDist = 30;
-                            const wallBoxR = { x1: pose.x + pose.width, y1: pose.y, x2: pose.x + pose.width + wallDist, y2: pose.y + pose.height - 10 };
-                            const wallBoxL = { x1: pose.x - wallDist, y1: pose.y, x2: pose.x, y2: pose.y + pose.height - 10 };
-                            const wallR = this.world.query(wallBoxR).some(c => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay);
-                            const wallL = this.world.query(wallBoxL).some(c => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay);
-
-                            debugSnapshot.ceilingEscapeWallProbeRight = wallBoxR;
-                            debugSnapshot.ceilingEscapeWallProbeLeft = wallBoxL;
-                            debugSnapshot.ceilingEscapeWallRight = wallR;
-                            debugSnapshot.ceilingEscapeWallLeft = wallL;
-
-                            // Force seek an opening
-                            if (wallR && !wallL) escapeDir = -1;
-                            else if (wallL && !wallR) escapeDir = 1;
-
-                            if (!wallR || !wallL) {
-                                this.ceilingEscapeDir = escapeDir;
-                                this.ceilingEscapeTimer = CEILING_ESCAPE_LATCH;
-                                input.left = (escapeDir === -1);
-                                input.right = (escapeDir === 1);
-                                // If we're escaping, we definitely shouldn't be jumping yet
-                                input.jump = false;
-                                input.jumpGauge = null;
-                                const reason = ceilingAbove
-                                    ? 'blocked'
-                                    : (arcBlocked ? 'arc-blocked' : 'suppressed');
-                                this.recordLog(
-                                    'CEILING_ESCAPE',
-                                    pose,
-                                    `dir=${escapeDir > 0 ? 'R' : 'L'} reason=${reason} L=${arcLeft.clearance.toFixed(2)} R=${arcRight.clearance.toFixed(2)}`
-                                );
-                            } else {
-                                this.ceilingEscapeDir = 0;
-                                this.ceilingEscapeTimer = 0;
                             }
                         }
-                    }
-                } else {
-                    // Tic-tac mode owns lateral steering and jump timing.
-                    this.moveCommitDir = 0;
-                    this.moveCommitTimer = 0;
-                    input.down = false;
-                    if (input.left) input.right = false;
-                    else if (input.right) input.left = false;
-                    debugSnapshot.deadzone = null;
-                    debugSnapshot.stickyBand = null;
-                    debugSnapshot.moveDir = this.ticTacDir as -1 | 0 | 1;
-                    debugSnapshot.shouldMoveHorizontally = true;
-                }
 
-                const loopRecovered = this.runSeekDiagnostics(pose, dt, moveDx, heightDiff, input);
-                if (loopRecovered) {
-                    // Avoid compounding loop correction with same-frame crouch/drop intents.
-                    input.down = false;
-                }
-
-                // Arrival Check
-                // Two ways to register a hit on a platform target:
-                //  A) Grounded on it: groundedId matches, feet near top, close on X
-                //  B) Body overlap: bot's AABB overlaps the platform's AABB (airborne touch counts)
-                // This ensures the bot registers hits when jumping through elements on arbitrary sites.
-                const botCenterY = pose.y + pose.height / 2;
-                let isOnTargetPlatform = false;
-                if (this.targetPlatform) {
-                    const tp = this.targetPlatform;
-                    // A) Grounded on the platform
-                    const feetNearTop = Math.abs(botFeetY - tp.aabb.y1) <= 15;
-                    const groundedHit = isSupported && pose.groundedId === tp.id && Math.abs(targetX - botCenterX) <= 35 && feetNearTop;
-                    // B) Body overlaps the platform AABB (touching/passing through it)
-                    //    No X-to-targetX check needed — if the bot is physically touching the element, it's a hit.
-                    //    Min overlap of 5px prevents single-pixel grazes from counting.
-                    const botAABB = { x1: pose.x, y1: pose.y, x2: pose.x + pose.width, y2: botFeetY };
-                    const overlapX = Math.min(botAABB.x2, tp.aabb.x2) - Math.max(botAABB.x1, tp.aabb.x1);
-                    const overlapY = Math.min(botAABB.y2, tp.aabb.y2) - Math.max(botAABB.y1, tp.aabb.y1);
-                    const touchHit = overlapX > 5 && overlapY > 5;
-                    isOnTargetPlatform = groundedHit || touchHit;
-                }
-                if (isOnTargetPlatform && (this.lockedTargetId === null || this.targetPlatform?.id === this.lockedTargetId)) {
-                    this.lockFailCount = 0;
-                }
-                // Manual targets: bot center proximity, no grounded requirement
-                // Manual targets: tighter center proximity since we don't have platform boundaries.
-                const isNearManualTarget = !this.targetPlatform && targetY !== null && Math.abs(targetX - botCenterX) <= 15 && Math.abs(botCenterY - targetY) <= 15;
-
-                if (isOnTargetPlatform || isNearManualTarget) {
-                    this.isDetourActive = false;
-                    this.recordLog('ARRIVED', pose, isOnTargetPlatform ? `platform ID:${this.targetPlatform!.id}` : 'coord match');
-                    const arrivedId = this.targetPlatform ? this.targetPlatform.id : null;
-                    this.lastHitId = arrivedId;
-                    // Track visits
-                    if (arrivedId !== null) {
-                        const prevArrivalId = this.recentArrivals.length > 0
-                            ? this.recentArrivals[this.recentArrivals.length - 1]
-                            : null;
-                        this.visitCounts.set(arrivedId, (this.visitCounts.get(arrivedId) || 0) + 1);
-                        this.recentArrivals.push(arrivedId);
-                        if (this.recentArrivals.length > 16) this.recentArrivals.shift();
-                        if (prevArrivalId !== null && prevArrivalId !== arrivedId) {
-                            this.recentTransitions.push({ fromId: prevArrivalId, toId: arrivedId });
-                            if (this.recentTransitions.length > 24) this.recentTransitions.shift();
-                        }
-
-                        if (this.breadcrumbStack.length === 0 || this.breadcrumbStack[this.breadcrumbStack.length - 1] !== arrivedId) {
-                            this.breadcrumbStack.push(arrivedId);
-                            if (this.breadcrumbStack.length > 15) this.breadcrumbStack.shift();
-                        }
-
-                        // Cache the takeoff coordinates if we just arrived using a calculated takeoff zone
-                        if (this.takeoffZone && this.navState === 'nav-ready') {
-                            const cachedTx = (this.takeoffZone.minX + this.takeoffZone.maxX) / 2;
-                            this.takeoffCache.set(arrivedId, { takeoffX: cachedTx, gauge: null });
-                        }
-                    }
-                    const lockId = this.lockedTargetId;
-                    const waypointArrival = arrivedId !== null && lockId !== null && arrivedId !== lockId;
-                    if (waypointArrival) {
-                        const locked = this.getLockedTarget();
-                        if (locked) {
-                            this.setStationaryPlatformTarget(locked, botCenterX);
-                            this.currentState = 'seek';
-                            this.bestProgressDist = Infinity;
-                            this.progressStagnationTimer = 0;
-                            this.retryCount = 0;
-                            this.approachPhase = 'direct';
-                            this.approachX = null;
+                        if (moveDir !== 0) {
+                            const flippingNearCenter = this.moveCommitDir !== 0
+                                && moveDir !== this.moveCommitDir
+                                && this.moveCommitTimer > 0
+                                && Math.abs(moveDx) < STEER_COMMIT_FLIP_GUARD;
+                            const enforceCommit = commitActive && !commitBlocked && moveDir !== this.moveCommitDir;
+                            if (enforceCommit || flippingNearCenter) {
+                                moveDir = this.moveCommitDir;
+                            } else if (moveDir !== this.moveCommitDir) {
+                                this.moveCommitDir = moveDir;
+                                let nextCommit = nearAndLevel ? STEER_COMMIT_HOLD_NEAR : STEER_COMMIT_HOLD_BASE;
+                                if (this.panicLatchTimer > 0) {
+                                    nextCommit = Math.max(nextCommit, 0.3);
+                                }
+                                this.moveCommitTimer = Math.max(this.moveCommitTimer, nextCommit);
+                            }
+                        } else if (this.moveCommitTimer <= 0) {
                             this.moveCommitDir = 0;
+                        }
+
+                        if (this.panicLatchTimer > 0 && pose.grounded && pose.groundedId !== null) {
+                            const currentNode = this.graph.nodes.get(pose.groundedId);
+                            const hasExits = currentNode && currentNode.edges.some(e => e.invalidUntil <= performance.now());
+                            if (!hasExits) {
+                                moveDir = 0;
+                                this.moveCommitDir = 0;
+                                this.moveCommitTimer = 0;
+                            }
+                        }
+
+                        if (moveDir > 0) input.right = true;
+                        else if (moveDir < 0) input.left = true;
+
+                        // Takeoff Slip Guard: when in nav-ready, maintain charging direction even if we slightly overshoot the center.
+                        if (this.navState === 'nav-ready' && this.takeoffZone) {
+                            const chargeDir = this.takeoffZone.facing;
+                            const inZone = botCenterX >= this.takeoffZone.minX - 4 && botCenterX <= this.takeoffZone.maxX + 4;
+                            if (inZone) {
+                                input.left = chargeDir < 0;
+                                input.right = chargeDir > 0;
+                                moveDir = chargeDir as -1 | 1;
+                            }
+                        }
+                        debugSnapshot.moveDir = moveDir;
+
+                        if (
+                            moveDir === 0
+                            && this.approachPhase !== 'backup'
+                            && this.approachPhase !== 'charge'
+                            && this.moveCommitTimer <= 0
+                        ) {
                             this.moveCommitTimer = 0;
-                            this.dropEdgeX = null;
-                            this.dropGroundId = null;
-                            this.dropLockTimer = 0;
-                            this.recordLog('RESUME_LOCK', pose, `waypoint ID${arrivedId} -> final ID${lockId}`);
-                            this.waypointStickyUntil = 0;
-                            this.waypointOriginId = null;
-                            this.fsmStagnationTimer = 0;
+                        }
+
+                        // If the target is almost straight above us and within a reasonable jump band,
+                        // suppress lateral dithering and commit to a vertical ascent attempt.
+                        const overheadAligned =
+                            pose.grounded &&
+                            targetX !== null &&
+                            targetY !== null &&
+                            this.approachPhase === 'direct' &&
+                            heightDiff > OVERHEAD_LOCK_MIN_HEIGHT &&
+                            heightDiff < OVERHEAD_LOCK_MAX_HEIGHT &&
+                            Math.abs(targetX - botCenterX) <= OVERHEAD_LOCK_MAX_DX;
+                        debugSnapshot.overheadAligned = overheadAligned;
+                        if (overheadAligned) {
+                            const verticalCeilingQuery = {
+                                x1: pose.x + 2,
+                                y1: pose.y - 40,
+                                x2: pose.x + pose.width - 2,
+                                y2: pose.y - 2
+                            };
+                            const hasHardCeiling = this.world.query(verticalCeilingQuery)
+                                .some(c => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay);
+                            const insideTakeoffZone = this.takeoffZone === null
+                                || (botCenterX >= this.takeoffZone.minX && botCenterX <= this.takeoffZone.maxX);
+                            const canCommitVerticalLock = this.takeoffZone === null
+                                || this.navState === 'nav-ready'
+                                || (this.navState === 'nav-approach' && insideTakeoffZone);
+                            debugSnapshot.overheadProbe = verticalCeilingQuery;
+                            debugSnapshot.overheadBlocked = hasHardCeiling;
+                            if (!hasHardCeiling && canCommitVerticalLock) {
+                                input.left = false;
+                                input.right = false;
+                                this.moveCommitDir = 0;
+                                this.moveCommitTimer = 0;
+
+                                const canVerticalJumpPlan = this.navState === 'nav-ready' || this.takeoffZone === null;
+                                if (canVerticalJumpPlan && !input.jump && !input.down) {
+                                    const gauge = this.computeGaugedJump(pose, targetX - botCenterX, heightDiff);
+                                    if (gauge !== null) requestJump(gauge, 'overhead-lock-jump');
+                                    else requestJump(null, 'overhead-lock-full-jump');
+                                }
+                            }
+                        }
+
+                        // --- Ceiling Entrapment Guardrail ---
+                        // If we need to go up but a ceiling is blocking the jump, force horizontal movement to find an opening.
+                        const isStalledUnderCeiling = targetY !== null && heightDiff > 15 && !input.jump;
+                        if (isStalledUnderCeiling && pose.grounded) {
+                            const standingHeadY = pose.y + pose.height - 40;
+                            const headProbe = { x1: pose.x + 2, y1: standingHeadY - 14, x2: pose.x + pose.width - 2, y2: pose.y - 2 };
+                            const ceilingAbove = this.world.query(headProbe).some(c => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay);
+                            const preferredEscape = this.moveCommitDir !== 0
+                                ? this.moveCommitDir
+                                : (targetX > botCenterX ? 1 : -1);
+                            const arcLeft = this.probeCeilingArcClearance(pose, -1);
+                            const arcRight = this.probeCeilingArcClearance(pose, 1);
+                            const preferredArc = preferredEscape > 0 ? arcRight : arcLeft;
+                            const arcBlocked = preferredArc.blocked;
+
+                            // Also consider we are blocked if we keep bonking
+                            const forceEscape = ceilingAbove || arcBlocked || (this.ceilingJumpSuppressTimer > 0.1 && this.ceilingBonkCount > 0);
+
+                            debugSnapshot.ceilingHeadProbe = headProbe;
+                            debugSnapshot.ceilingBlocked = ceilingAbove;
+                            debugSnapshot.ceilingArcBlocked = arcBlocked;
+                            debugSnapshot.ceilingArcClearanceLeft = arcLeft.clearance;
+                            debugSnapshot.ceilingArcClearanceRight = arcRight.clearance;
+
+                            if (forceEscape) {
+                                if (arcBlocked && this.ceilingArcInvalidateTimer <= 0) {
+                                    const reason = 'ceiling-arc-block';
+                                    if (this.activeManeuver && this.activeManeuverFromId !== null) {
+                                        this.invalidateActiveManeuver(pose, reason, 9000);
+                                    } else if (pose.groundedId !== null && this.targetPlatform) {
+                                        this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, reason, 9000);
+                                    }
+                                    this.ceilingArcInvalidateTimer = CEILING_ARC_INVALIDATE_COOLDOWN;
+                                    this.recordLog(
+                                        'CEILING_ARC_BLOCK',
+                                        pose,
+                                        `L=${arcLeft.clearance.toFixed(2)} R=${arcRight.clearance.toFixed(2)} pref=${preferredEscape > 0 ? 'R' : 'L'}`
+                                    );
+                                }
+
+                                let escapeDir: -1 | 1 = (this.ceilingEscapeTimer > 0 && this.ceilingEscapeDir !== 0
+                                    ? this.ceilingEscapeDir
+                                    : preferredEscape) as -1 | 1;
+
+                                // Bias toward direction with higher free-arc clearance.
+                                if (arcRight.clearance > arcLeft.clearance + 0.08) escapeDir = 1;
+                                else if (arcLeft.clearance > arcRight.clearance + 0.08) escapeDir = -1;
+
+                                const wallDist = 30;
+                                const wallBoxR = { x1: pose.x + pose.width, y1: pose.y, x2: pose.x + pose.width + wallDist, y2: pose.y + pose.height - 10 };
+                                const wallBoxL = { x1: pose.x - wallDist, y1: pose.y, x2: pose.x, y2: pose.y + pose.height - 10 };
+                                const wallR = this.world.query(wallBoxR).some(c => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay);
+                                const wallL = this.world.query(wallBoxL).some(c => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay);
+
+                                debugSnapshot.ceilingEscapeWallProbeRight = wallBoxR;
+                                debugSnapshot.ceilingEscapeWallProbeLeft = wallBoxL;
+                                debugSnapshot.ceilingEscapeWallRight = wallR;
+                                debugSnapshot.ceilingEscapeWallLeft = wallL;
+
+                                // Force seek an opening
+                                if (wallR && !wallL) escapeDir = -1;
+                                else if (wallL && !wallR) escapeDir = 1;
+
+                                if (!wallR || !wallL) {
+                                    this.ceilingEscapeDir = escapeDir;
+                                    this.ceilingEscapeTimer = CEILING_ESCAPE_LATCH;
+                                    input.left = (escapeDir === -1);
+                                    input.right = (escapeDir === 1);
+                                    // If we're escaping, we definitely shouldn't be jumping yet
+                                    input.jump = false;
+                                    input.jumpGauge = null;
+                                    const reason = ceilingAbove
+                                        ? 'blocked'
+                                        : (arcBlocked ? 'arc-blocked' : 'suppressed');
+                                    this.recordLog(
+                                        'CEILING_ESCAPE',
+                                        pose,
+                                        `dir=${escapeDir > 0 ? 'R' : 'L'} reason=${reason} L=${arcLeft.clearance.toFixed(2)} R=${arcRight.clearance.toFixed(2)}`
+                                    );
+                                } else {
+                                    this.ceilingEscapeDir = 0;
+                                    this.ceilingEscapeTimer = 0;
+                                }
+                            }
+                        }
+                    } else {
+                        // Tic-tac mode owns lateral steering and jump timing.
+                        this.moveCommitDir = 0;
+                        this.moveCommitTimer = 0;
+                        input.down = false;
+                        if (input.left) input.right = false;
+                        else if (input.right) input.left = false;
+                        debugSnapshot.deadzone = null;
+                        debugSnapshot.stickyBand = null;
+                        debugSnapshot.moveDir = this.ticTacDir as -1 | 0 | 1;
+                        debugSnapshot.shouldMoveHorizontally = true;
+                    }
+
+                    const loopRecovered = this.runSeekDiagnostics(pose, dt, moveDx, heightDiff, input);
+                    if (loopRecovered) {
+                        // Avoid compounding loop correction with same-frame crouch/drop intents.
+                        input.down = false;
+                    }
+
+                    // Arrival Check
+                    // Two ways to register a hit on a platform target:
+                    //  A) Grounded on it: groundedId matches, feet near top, close on X
+                    //  B) Body overlap: bot's AABB overlaps the platform's AABB (airborne touch counts)
+                    // This ensures the bot registers hits when jumping through elements on arbitrary sites.
+                    const botCenterY = pose.y + pose.height / 2;
+                    let isOnTargetPlatform = false;
+                    if (this.targetPlatform) {
+                        const tp = this.targetPlatform;
+                        // A) Grounded on the platform
+                        const feetNearTop = Math.abs(botFeetY - tp.aabb.y1) <= 15;
+                        const groundedHit = isSupported && pose.groundedId === tp.id && Math.abs(targetX - botCenterX) <= 35 && feetNearTop;
+                        // B) Body overlaps the platform AABB (touching/passing through it)
+                        //    No X-to-targetX check needed — if the bot is physically touching the element, it's a hit.
+                        //    Min overlap of 5px prevents single-pixel grazes from counting.
+                        const botAABB = { x1: pose.x, y1: pose.y, x2: pose.x + pose.width, y2: botFeetY };
+                        const overlapX = Math.min(botAABB.x2, tp.aabb.x2) - Math.max(botAABB.x1, tp.aabb.x1);
+                        const overlapY = Math.min(botAABB.y2, tp.aabb.y2) - Math.max(botAABB.y1, tp.aabb.y1);
+                        const touchHit = overlapX > 5 && overlapY > 5;
+                        isOnTargetPlatform = groundedHit || touchHit;
+                    }
+                    if (isOnTargetPlatform && (this.lockedTargetId === null || this.targetPlatform?.id === this.lockedTargetId)) {
+                        this.lockFailCount = 0;
+                        this.seekHardTimer = 0;
+                    }
+                    // Manual targets: bot center proximity, no grounded requirement
+                    // Manual targets: tighter center proximity since we don't have platform boundaries.
+                    const isNearManualTarget = !this.targetPlatform && targetY !== null && Math.abs(targetX - botCenterX) <= 15 && Math.abs(botCenterY - targetY) <= 15;
+
+                    if (isOnTargetPlatform || isNearManualTarget) {
+                        this.isDetourActive = false;
+                        this.seekHardTimer = 0;
+                        this.recordLog('ARRIVED', pose, isOnTargetPlatform ? `platform ID:${this.targetPlatform!.id}` : 'coord match');
+                        const arrivedId = this.targetPlatform ? this.targetPlatform.id : null;
+                        this.lastHitId = arrivedId;
+                        // Track visits
+                        if (arrivedId !== null) {
+                            const prevArrivalId = this.recentArrivals.length > 0
+                                ? this.recentArrivals[this.recentArrivals.length - 1]
+                                : null;
+                            this.visitCounts.set(arrivedId, (this.visitCounts.get(arrivedId) || 0) + 1);
+                            this.recentArrivals.push(arrivedId);
+                            if (this.recentArrivals.length > 16) this.recentArrivals.shift();
+                            if (prevArrivalId !== null && prevArrivalId !== arrivedId) {
+                                this.recentTransitions.push({ fromId: prevArrivalId, toId: arrivedId });
+                                if (this.recentTransitions.length > 24) this.recentTransitions.shift();
+                            }
+
+                            if (this.breadcrumbStack.length === 0 || this.breadcrumbStack[this.breadcrumbStack.length - 1] !== arrivedId) {
+                                this.breadcrumbStack.push(arrivedId);
+                                if (this.breadcrumbStack.length > 15) this.breadcrumbStack.shift();
+                            }
+
+                            // Cache the takeoff coordinates if we just arrived using a calculated takeoff zone
+                            if (this.takeoffZone && this.navState === 'nav-ready') {
+                                const cachedTx = (this.takeoffZone.minX + this.takeoffZone.maxX) / 2;
+                                this.takeoffCache.set(arrivedId, { takeoffX: cachedTx, gauge: null });
+                            }
+                        }
+                        const lockId = this.lockedTargetId;
+                        const waypointArrival = arrivedId !== null && lockId !== null && arrivedId !== lockId;
+                        if (waypointArrival) {
+                            const locked = this.getLockedTarget();
+                            if (locked) {
+                                this.setStationaryPlatformTarget(locked, botCenterX);
+                                this.currentState = 'seek';
+                                this.bestProgressDist = Infinity;
+                                this.progressStagnationTimer = 0;
+                                this.retryCount = 0;
+                                this.approachPhase = 'direct';
+                                this.approachX = null;
+                                this.moveCommitDir = 0;
+                                this.moveCommitTimer = 0;
+                                this.dropEdgeX = null;
+                                this.dropGroundId = null;
+                                this.dropLockTimer = 0;
+                                this.recordLog('RESUME_LOCK', pose, `waypoint ID${arrivedId} -> final ID${lockId}`);
+                                this.waypointStickyUntil = 0;
+                                this.waypointOriginId = null;
+                                this.fsmStagnationTimer = 0;
+                            } else {
+                                // Locked target disappeared (DOM changed). Fall back cleanly.
+                                this.recordLog('GIVE_UP_LOCK', pose, `locked target missing after waypoint ID${arrivedId}`);
+                                this.clearTargetLock();
+                                this.hitConfirmedTimer = 0.5;
+                                this.currentState = 'idle';
+                                this.bestProgressDist = Infinity;
+                                this.progressStagnationTimer = 0;
+                                this.fsmStagnationTimer = 0;
+                                this.targetPlatform = null;
+                                this.targetX = null;
+                                this.autoTargetY = null;
+                                this.retryCount = 0;
+                                this.approachPhase = 'direct';
+                                this.approachX = null;
+                                this.moveCommitDir = 0;
+                                this.moveCommitTimer = 0;
+                                this.dropEdgeX = null;
+                                this.dropGroundId = null;
+                                this.dropLockTimer = 0;
+                                this.navState = 'nav-align';
+                                this.takeoffZone = null;
+                                this.patienceTimer = 0;
+                            }
                         } else {
-                            // Locked target disappeared (DOM changed). Fall back cleanly.
-                            this.recordLog('GIVE_UP_LOCK', pose, `locked target missing after waypoint ID${arrivedId}`);
-                            this.clearTargetLock();
+                            // Final target (or manual coordinate) completed.
+                            if (arrivedId !== null && lockId !== null && arrivedId === lockId) {
+                                this.clearTargetLock();
+                            }
                             this.hitConfirmedTimer = 0.5;
                             this.currentState = 'idle';
                             this.bestProgressDist = Infinity;
                             this.progressStagnationTimer = 0;
                             this.fsmStagnationTimer = 0;
-                            this.targetPlatform = null;
-                            this.targetX = null;
-                            this.autoTargetY = null;
+                            // In manual mode, keep targetX/targetPlatform/manualTargetY
+                            // alive so the reticle stays visible at the clicked location.
+                            if (!this.manualMode) {
+                                this.targetPlatform = null;
+                                this.targetX = null;
+                                this.autoTargetY = null;
+                            }
                             this.retryCount = 0;
                             this.approachPhase = 'direct';
                             this.approachX = null;
@@ -3194,462 +3324,493 @@ export class Brain {
                             this.patienceTimer = 0;
                         }
                     } else {
-                        // Final target (or manual coordinate) completed.
-                        if (arrivedId !== null && lockId !== null && arrivedId === lockId) {
-                            this.clearTargetLock();
-                        }
-                        this.hitConfirmedTimer = 0.5;
-                        this.currentState = 'idle';
-                        this.bestProgressDist = Infinity;
-                        this.progressStagnationTimer = 0;
-                        this.fsmStagnationTimer = 0;
-                        this.targetPlatform = null;
-                        this.targetX = null;
-                        this.autoTargetY = null;
-                        this.retryCount = 0;
-                        this.approachPhase = 'direct';
-                        this.approachX = null;
-                        this.moveCommitDir = 0;
-                        this.moveCommitTimer = 0;
-                        this.dropEdgeX = null;
-                        this.dropGroundId = null;
-                        this.dropLockTimer = 0;
-                        this.navState = 'nav-align';
-                        this.takeoffZone = null;
-                        this.patienceTimer = 0;
-                    }
-                } else {
-                    // Progress metric already handles timeouts, but we still want stuck/fall physics detections
-                    // If we fall strictly below
-                    if (isSupported && this.targetPlatform && (pose.y - this.targetPlatform.aabb.y1) > 200) {
-                        // Allow brief grace period for dropping through
-                        if (this.progressStagnationTimer > 1.0) {
-                            this.retryCount++;
-                            this.recordLog('FELL_BELOW', pose, `dy=${Math.round(pose.y - this.targetPlatform.aabb.y1)} retries=${this.retryCount}`);
-                            if (this.retryCount % 5 === 0) {
-                                this.recordLog('PERSIST_RETRY', pose, `lock=${this.lockedTargetId ?? '-'} attempts=${this.retryCount}`);
+                        // Progress metric already handles timeouts, but we still want stuck/fall physics detections
+                        // If we fall strictly below
+                        if (isSupported && this.targetPlatform && (pose.y - this.targetPlatform.aabb.y1) > 200) {
+                            // Allow brief grace period for dropping through
+                            if (this.progressStagnationTimer > 1.0) {
+                                this.retryCount++;
+                                this.recordLog('FELL_BELOW', pose, `dy=${Math.round(pose.y - this.targetPlatform.aabb.y1)} retries=${this.retryCount}`);
+                                if (this.retryCount % 5 === 0) {
+                                    this.recordLog('PERSIST_RETRY', pose, `lock=${this.lockedTargetId ?? '-'} attempts=${this.retryCount}`);
+                                }
+                                this.bestProgressDist = Infinity;
+                                this.progressStagnationTimer = 0;
+                                this.fsmStagnationTimer = 0;
+                                this.attemptBreadcrumbRecovery(pose, 'fell-below-target');
                             }
-                            this.bestProgressDist = Infinity;
-                            this.progressStagnationTimer = 0;
-                            this.fsmStagnationTimer = 0;
-                            this.attemptBreadcrumbRecovery(pose, 'fell-below-target');
                         }
-                    }
 
-                    // Specific physical snags: if moving super slowly while holding direction AND progressStagnationTimer proves it's not a tiny bump
-                    if (this.approachPhase !== 'backup' && this.approachPhase !== 'charge') {
-                        // If vx is very low despite input, and not just starting out:
-                        const tryingHoriz = input.left || input.right;
-                        if (tryingHoriz && pose.grounded && Math.abs(pose.vx) < 10 && this.progressStagnationTimer > 2.0) {
-                            this.recordLog('STUCK', pose, `vx=${Math.round(pose.vx)} dx=${Math.round(targetX - botCenterX)} h=${Math.round(heightDiff)} phase=${this.approachPhase}`);
-                            if (input.down && (input.left || input.right)) {
-                                this.recordLog('STUCK_CROUCH_PATH', pose, `hold-crouch dir=${input.left ? 'L' : 'R'} dx=${Math.round(targetX - botCenterX)}`);
+                        // Specific physical snags: if moving super slowly while holding direction AND progressStagnationTimer proves it's not a tiny bump
+                        if (this.approachPhase !== 'backup' && this.approachPhase !== 'charge') {
+                            // If vx is very low despite input, and not just starting out:
+                            const tryingHoriz = input.left || input.right;
+                            if (tryingHoriz && pose.grounded && Math.abs(pose.vx) < 10 && this.progressStagnationTimer > 2.0) {
+                                this.recordLog('STUCK', pose, `vx=${Math.round(pose.vx)} dx=${Math.round(targetX - botCenterX)} h=${Math.round(heightDiff)} phase=${this.approachPhase}`);
+                                if (input.down && (input.left || input.right)) {
+                                    this.recordLog('STUCK_CROUCH_PATH', pose, `hold-crouch dir=${input.left ? 'L' : 'R'} dx=${Math.round(targetX - botCenterX)}`);
+                                } else {
+                                    requestJump(null, 'stuck-recovery-hop');
+                                }
+                                // Reset local progress to prevent instant re-trigger
+                                this.bestProgressDist = Infinity;
+                                this.progressStagnationTimer = 0;
+                                this.fsmStagnationTimer = 0;
+
+                                // Unlike pure stagnation, physical stuck means we tried an edge and completely snagged.
+                                const nearTarget = targetX !== null && targetY !== null
+                                    && Math.abs(targetX - botCenterX) < 140
+                                    && Math.abs(heightDiff) < 220;
+
+                                if (isSupported && this.targetPlatform && (!nearTarget || this.retryCount > 1)) {
+                                    if (this.navState === 'nav-approach') {
+                                        this.recordLog('NAV_APPROACH_FAIL', pose, 'stuck before takeoff zone');
+                                        this.takeoffCache.delete(this.targetPlatform.id);
+                                    }
+                                    this.invalidateActiveManeuver(pose, 'stuck', 8000);
+                                    if (!this.activeManeuver && pose.groundedId !== null && this.targetPlatform) {
+                                        this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, 'stuck', 8000);
+                                    }
+                                    this.attemptBreadcrumbRecovery(pose, 'stuck');
+                                }
+                            }
+
+                            // 3. Gap Handling (skip during backup phase — bot is deliberately retreating)
+                            const targetIsBelow = targetY !== null && targetY > (botFeetY + 10);
+                            const lookAhead = input.right ? 25 : input.left ? -25 : 0;
+                            const jumpAllowed = this.navState === 'nav-ready';
+                            const canEarlyHighJump = this.navState === 'nav-approach'
+                                && this.approachPhase === 'direct'
+                                && targetX !== null
+                                && targetY !== null
+                                && heightDiff > 40;
+
+                            if (lookAhead !== 0 && pose.grounded && this.currentState === 'seek' && !targetIsBelow && !input.down) {
+                                const projectedFeet = { x1: pose.x + (input.right ? pose.width : 0) + lookAhead, y1: botFeetY, x2: pose.x + (input.right ? pose.width : 0) + lookAhead + 10, y2: botFeetY + 40 };
+                                const projectedHasGround = this.world.query(projectedFeet).some(c => c.kind === 'rect');
+                                debugSnapshot.gapProbe = projectedFeet;
+                                debugSnapshot.gapProbeHasGround = projectedHasGround;
+                                if (!projectedHasGround) {
+                                    const gapGauge = targetX !== null ? this.computeGaugedJump(pose, targetX - botCenterX, heightDiff) : null;
+                                    const hadJumpIntent = input.jump;
+                                    requestJump(gapGauge, 'gap-jump');
+                                    if (!hadJumpIntent && gapGauge !== null && input.jump) {
+                                        this.recordLog('GAUGED_JUMP', pose, `reason=gap g=${gapGauge.toFixed(2)} dx=${Math.round(Math.abs(targetX! - botCenterX))} h=${Math.round(heightDiff)}`);
+                                    }
+                                }
+                            }
+
+                            // 3b. Low Ceiling Handling (Crouch/Slide)
+                            const currentBodyAABB = { x1: pose.x, y1: pose.y, x2: pose.x + pose.width, y2: botFeetY };
+                            const isOverlap = (b: { x1: number, y1: number, x2: number, y2: number }) =>
+                                currentBodyAABB.x1 < b.x2 && currentBodyAABB.x2 > b.x1 && currentBodyAABB.y1 < b.y2 && currentBodyAABB.y2 > b.y1;
+                            let crouchClearancePath = false;
+                            const suppressCeilingJump = this.ceilingJumpSuppressTimer > 0 && pose.grounded;
+
+                            const lookAheadCrouch = input.right ? 42 : input.left ? -42 : 0;
+                            const shouldConsiderCrouch =
+                                lookAheadCrouch !== 0 &&
+                                pose.grounded &&
+                                !input.jump;
+
+                            if (shouldConsiderCrouch) {
+                                const ahead = Math.abs(lookAheadCrouch);
+                                const headBox = {
+                                    x1: input.right ? pose.x + pose.width : pose.x - ahead,
+                                    y1: botFeetY - 38,
+                                    x2: input.right ? pose.x + pose.width + ahead : pose.x,
+                                    y2: botFeetY - 22
+                                };
+                                const kneeBox = {
+                                    x1: headBox.x1,
+                                    y1: botFeetY - 18,
+                                    x2: headBox.x2,
+                                    y2: botFeetY - 2
+                                };
+
+                                const headBang = this.world.query(headBox).some(c => c.kind === 'rect' && c.flags.solid && !isOverlap(c.aabb));
+                                const kneeClear = !this.world.query(kneeBox).some(c => c.kind === 'rect' && c.flags.solid && !isOverlap(c.aabb));
+
+                                if (headBang && kneeClear) {
+                                    input.down = true;
+                                    crouchClearancePath = true;
+                                    this.recordLog('CROUCH_PATH', pose, `dir=${input.right ? 'R' : 'L'} clearance=low-head`);
+                                }
+                            }
+
+                            // Air tuck: while jumping toward higher targets, compress height to pass low overhead slots.
+                            const shouldConsiderAirTuck =
+                                !pose.grounded &&
+                                targetY !== null &&
+                                heightDiff > 12 &&
+                                pose.state !== 'wall-slide' &&
+                                pose.state !== 'climb';
+
+                            if (shouldConsiderAirTuck) {
+                                const travelDir = input.right ? 1 : input.left ? -1 : (pose.vx > 25 ? 1 : pose.vx < -25 ? -1 : 0);
+                                const leadX = travelDir * 10;
+                                const airTuckProbe = {
+                                    x1: pose.x + 2 + leadX,
+                                    y1: pose.y - 14,
+                                    x2: pose.x + pose.width - 2 + leadX,
+                                    y2: pose.y + 12
+                                };
+                                const tuckBodyProbe = {
+                                    x1: pose.x + 2 + leadX,
+                                    y1: pose.y + 16,
+                                    x2: pose.x + pose.width - 2 + leadX,
+                                    y2: pose.y + pose.height - 4
+                                };
+
+                                const nearCeiling = this.world.query(airTuckProbe)
+                                    .some(c => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay && !isOverlap(c.aabb));
+                                const bodyClear = !this.world.query(tuckBodyProbe)
+                                    .some(c => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay && !isOverlap(c.aabb));
+
+                                const nearTargetColumn = targetX === null || Math.abs(targetX - botCenterX) <= 130;
+                                const upwardOrEarlyFall = pose.vy < 120;
+                                const airTuckWanted = nearCeiling && bodyClear && nearTargetColumn && upwardOrEarlyFall;
+
+                                debugSnapshot.airTuckProbe = airTuckProbe;
+                                debugSnapshot.airTuckWanted = airTuckWanted;
+                                if (airTuckWanted) input.down = true;
                             } else {
-                                requestJump(null, 'stuck-recovery-hop');
+                                debugSnapshot.airTuckProbe = null;
+                                debugSnapshot.airTuckWanted = false;
                             }
-                            // Reset local progress to prevent instant re-trigger
-                            this.bestProgressDist = Infinity;
-                            this.progressStagnationTimer = 0;
-                            this.fsmStagnationTimer = 0;
 
-                            // Unlike pure stagnation, physical stuck means we tried an edge and completely snagged.
-                            const nearTarget = targetX !== null && targetY !== null
-                                && Math.abs(targetX - botCenterX) < 140
-                                && Math.abs(heightDiff) < 220;
+                            // Low Ceiling / Head Bang
+                            if (pose.grounded && (input.left || input.right)) {
+                                const wallCheckDist = 30;
+                                const tDir = input.right ? 1 : -1;
+                                const wallBox = { x1: tDir > 0 ? pose.x + pose.width : pose.x - wallCheckDist, y1: pose.y, x2: tDir > 0 ? pose.x + pose.width + wallCheckDist : pose.x, y2: pose.y + pose.height - 10 };
+                                if (this.world.query(wallBox).some(c => c.kind === 'rect' && c.flags.solid && !isOverlap(c.aabb))) {
+                                    if (crouchClearancePath || input.down || suppressCeilingJump) {
+                                        // In tight horizontal lanes, keep crouching rather than forcing a jump.
+                                        if (suppressCeilingJump) input.down = true;
+                                        input.jump = false;
+                                        input.jumpGauge = null;
+                                    } else {
+                                        const ceilingQuery = { x1: pose.x + 2, y1: pose.y - 30, x2: pose.x + pose.width - 2, y2: pose.y - 2 };
+                                        if (!this.world.query(ceilingQuery).some(c => c.flags.solid && !c.flags.oneWay && !isOverlap(c.aabb))) requestJump(null, 'wall-bang-hop');
+                                    }
+                                }
 
-                            if (isSupported && this.targetPlatform && (!nearTarget || this.retryCount > 1)) {
-                                if (this.navState === 'nav-approach') {
-                                    this.recordLog('NAV_APPROACH_FAIL', pose, 'stuck before takeoff zone');
-                                    this.takeoffCache.delete(this.targetPlatform.id);
+                                // High Ground Jump (skip during backup phase — don't jump while retreating)
+                                if ((jumpAllowed || canEarlyHighJump) && targetX !== null && heightDiff > 12 && !input.down && !input.jump && !crouchClearancePath && !suppressCeilingJump) {
+                                    // Check if target requires more height than current ceiling allows
+                                    const clearanceNeeded = Math.min(100, heightDiff + 10);
+                                    const ceilingQuery = {
+                                        x1: pose.x + 2,
+                                        y1: pose.y - clearanceNeeded,
+                                        x2: pose.x + pose.width - 2,
+                                        y2: pose.y - 2
+                                    };
+
+                                    const blockedByCeiling = this.world.query(ceilingQuery).some(c => c.flags.solid && !c.flags.oneWay && !isOverlap(c.aabb));
+
+                                    if (!blockedByCeiling) {
+                                        const dxAbs = Math.abs(targetX - botCenterX);
+                                        const gauge = this.approachPhase === 'direct'
+                                            ? this.computeGaugedJump(pose, targetX - botCenterX, heightDiff)
+                                            : null;
+
+                                        if (gauge !== null) {
+                                            requestJump(gauge, 'direct-gauged-jump');
+                                            if (input.jump) {
+                                                this.recordLog('GAUGED_JUMP', pose, `reason=direct g=${gauge.toFixed(2)} dx=${Math.round(dxAbs)} h=${Math.round(heightDiff)}`);
+                                            }
+                                        } else if (heightDiff > 20 && dxAbs < 160) {
+                                            // Only auto-jump if we are reasonably close horizontally.
+                                            // Otherwise, walk until we reach the gap/edge.
+                                            requestJump(null, 'direct-full-jump');
+                                        }
+                                    }
                                 }
-                                this.invalidateActiveManeuver(pose, 'stuck', 8000);
-                                if (!this.activeManeuver && pose.groundedId !== null && this.targetPlatform) {
-                                    this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, 'stuck', 8000);
+                            }
+
+                            // Drop Down (for full-width headers/footers where walking off the edge isn't possible)
+                            // If target is significantly below us and we are horizontally aligned, drop through!
+                            const groundedCollider = pose.groundedId !== null ? this.world.colliders.get(pose.groundedId) : undefined;
+
+                            // If target is below and we're standing on a solid platform, commit to an edge drop plan.
+                            if (pose.grounded && groundedCollider && !groundedCollider.flags.oneWay && targetX !== null && targetY !== null && heightDiff < -30) {
+                                const seal = this.assessDownwardSeal(groundedCollider);
+                                const downSealed = this.sealedDownIntentGrounds.has(groundedCollider.id);
+                                if (seal.sealed && !downSealed) {
+                                    this.sealedDownIntentGrounds.add(groundedCollider.id);
+                                    this.recordLog(
+                                        'DOWN_SEALED',
+                                        pose,
+                                        `ground=ID${groundedCollider.id} cov=${seal.coverage.toFixed(2)} open=${seal.openRun} walls=${seal.leftWall && seal.rightWall ? 'yy' : `${seal.leftWall ? 'y' : 'n'}${seal.rightWall ? 'y' : 'n'}`}`
+                                    );
+                                    this.invalidateActiveManeuver(pose, 'down-sealed', 8000);
+                                    if (!this.activeManeuver && this.targetPlatform) {
+                                        this.graph.invalidateEdge(groundedCollider.id, this.targetPlatform.id, 'down-sealed', 8000);
+                                    }
+                                    this.reroute(pose, 'down-sealed');
+                                    this.downSealRerouteTimer = DOWN_SEAL_REROUTE_COOLDOWN;
                                 }
-                                this.attemptBreadcrumbRecovery(pose, 'stuck');
+
+                                if (this.sealedDownIntentGrounds.has(groundedCollider.id)) {
+                                    this.dropEdgeX = null;
+                                    this.dropGroundId = null;
+                                    this.dropLockTimer = 0;
+                                    debugSnapshot.dropPlannedEdgeX = null;
+                                    debugSnapshot.dropDirection = 0;
+                                    if (this.downSealRerouteTimer <= 0) {
+                                        this.reroute(pose, 'down-sealed');
+                                        this.downSealRerouteTimer = DOWN_SEAL_REROUTE_COOLDOWN;
+                                    }
+                                } else {
+                                    const edgePad = 6;
+                                    const leftEdge = groundedCollider.aabb.x1 + edgePad;
+                                    const rightEdge = groundedCollider.aabb.x2 - edgePad;
+
+                                    const hasWallAtEdge = (edgeX: number, dir: -1 | 1) => {
+                                        const probe = {
+                                            x1: dir > 0 ? edgeX : edgeX - 18,
+                                            y1: pose.y + 8,
+                                            x2: dir > 0 ? edgeX + 18 : edgeX,
+                                            y2: pose.y + pose.height - 8
+                                        };
+                                        return this.world.query(probe).some(c => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay && c.id !== groundedCollider.id);
+                                    };
+
+                                    const leftBlocked = hasWallAtEdge(leftEdge, -1);
+                                    const rightBlocked = hasWallAtEdge(rightEdge, 1);
+                                    const leftScore = Math.abs(targetX - leftEdge) + (leftBlocked ? 1000 : 0);
+                                    const rightScore = Math.abs(targetX - rightEdge) + (rightBlocked ? 1000 : 0);
+
+                                    const desiredEdge = rightScore <= leftScore ? rightEdge : leftEdge;
+                                    const sameGround = this.dropGroundId === groundedCollider.id;
+                                    const shouldReuseDropPlan = sameGround && this.dropEdgeX !== null && this.dropLockTimer > 0;
+                                    const chosenEdge = shouldReuseDropPlan ? this.dropEdgeX! : desiredEdge;
+                                    const dropRight = Math.abs(chosenEdge - rightEdge) <= Math.abs(chosenEdge - leftEdge);
+                                    const dropBlocked = dropRight ? rightBlocked : leftBlocked;
+
+                                    if (!shouldReuseDropPlan) {
+                                        this.dropEdgeX = chosenEdge;
+                                        this.dropGroundId = groundedCollider.id;
+                                        this.dropLockTimer = 2.5; // Increased stickiness to ensure we reach the edge
+                                        this.recordLog(
+                                            'EDGE_DROP_PLAN',
+                                            pose,
+                                            `ground=ID${groundedCollider.id} edge=${Math.round(chosenEdge)} blocked=${dropBlocked ? 'y' : 'n'} targetDx=${Math.round(targetX - botCenterX)}`
+                                        );
+                                    }
+
+                                    const dropDir: -1 | 1 = dropRight ? 1 : -1;
+                                    const dropExitX = chosenEdge + dropDir * (pose.width * 0.75 + 4);
+                                    const distFromEdge = Math.abs(chosenEdge - botCenterX);
+                                    const atEdge = distFromEdge < 26;
+
+                                    debugSnapshot.dropPlannedEdgeX = chosenEdge;
+                                    debugSnapshot.dropDirection = dropDir;
+
+                                    // Intent-stuck: we reached the drop edge and intend to fall, but downward motion never starts.
+                                    // In this physics model, downward velocity is +vy.
+                                    const intendsDrop = atEdge && !dropBlocked;
+                                    if (intendsDrop) {
+                                        const sameIntent =
+                                            this.dropIntentGroundId === groundedCollider.id
+                                            && this.dropIntentEdgeX !== null
+                                            && Math.abs(this.dropIntentEdgeX - chosenEdge) < 2;
+                                        if (!sameIntent) {
+                                            this.dropIntentGroundId = groundedCollider.id;
+                                            this.dropIntentEdgeX = chosenEdge;
+                                            this.dropIntentStuckTimer = 0;
+                                        }
+
+                                        const startedFalling = !pose.grounded || pose.vy >= EDGE_DROP_INTENT_FALL_VY;
+                                        if (startedFalling) {
+                                            this.resetDropIntentTracking();
+                                        } else {
+                                            this.dropIntentStuckTimer += dt;
+                                        }
+
+                                        if (!startedFalling && this.dropIntentStuckTimer > EDGE_DROP_INTENT_STUCK_WINDOW) {
+                                            this.recordLog(
+                                                'EDGE_DROP_INTENT_STUCK',
+                                                pose,
+                                                `ground=ID${groundedCollider.id} vy=${Math.round(pose.vy)} t=${this.dropIntentStuckTimer.toFixed(2)}`
+                                            );
+                                            if (this.targetPlatform) {
+                                                this.graph.invalidateEdge(groundedCollider.id, this.targetPlatform.id, 'edge-drop-intent-stuck', 8000);
+                                            }
+                                            this.invalidateActiveManeuver(pose, 'edge-drop-intent-stuck', 8000);
+                                            this.resetManeuverTracking();
+                                            this.dropEdgeX = null;
+                                            this.dropGroundId = null;
+                                            this.dropLockTimer = 0;
+                                            this.resetDropIntentTracking();
+                                            this.reroute(pose, 'edge-drop-intent-stuck');
+                                        }
+                                    } else {
+                                        this.resetDropIntentTracking();
+                                    }
+
+                                    // Breakout logic for walled edges
+                                    if (atEdge && dropBlocked) {
+                                        if (this.progressStagnationTimer > 1.2 && this.wallDecisionTimer <= 0) {
+                                            requestJump(null, 'edge-drop-wall-hop');
+                                            this.wallDecisionTimer = WALL_DECISION_COOLDOWN;
+                                        }
+
+                                        // If persistently blocked even after jump attempts, invalidate the edge/target.
+                                        if (this.progressStagnationTimer > 2.5) {
+                                            this.recordLog('EDGE_DROP_FAIL', pose, `blocked by wall at edge ID${groundedCollider.id}`);
+                                            if (this.targetPlatform) {
+                                                this.graph.invalidateEdge(groundedCollider.id, this.targetPlatform.id, 'edge-drop-blocked', 8000);
+                                            }
+                                            this.invalidateActiveManeuver(pose, 'edge-drop-blocked', 8000);
+                                            this.resetManeuverTracking(); // Force re-evaluation
+                                        }
+                                    }
+
+                                    // Horizontal Steering
+                                    input.right = dropDir > 0;
+                                    input.left = dropDir < 0;
+
+                                    // Keep crouch only when we explicitly detected a low-clearance horizontal path.
+                                    if (!crouchClearancePath) {
+                                        input.down = false;
+                                    }
+                                }
+                            } else if (!pose.grounded || !groundedCollider || groundedCollider.flags.oneWay) {
+                                this.dropEdgeX = null;
+                                this.dropGroundId = null;
+                                this.dropLockTimer = 0;
+                                debugSnapshot.dropPlannedEdgeX = null;
+                                debugSnapshot.dropDirection = 0;
+                                this.downSealRerouteTimer = 0;
+                            }
+
+                            const canDropThroughGround = !!groundedCollider?.flags.oneWay;
+
+                            if (pose.grounded && canDropThroughGround && targetX !== null && heightDiff < -30) {
+                                const dx = Math.abs(targetX - botCenterX);
+                                if (dx < 70) {
+                                    input.down = true;
+                                    requestJump(null, 'drop-through');
+                                }
+                            }
+
+                            // Air jumps: choose between double or triple based on target gap.
+                            if (!pose.grounded && pose.state !== 'wall-slide' && pose.jumps < MAX_TOTAL_JUMPS && targetX !== null) {
+                                const dx = Math.abs(targetX - botCenterX);
+                                const descending = pose.vy > 50;
+                                const shouldDouble =
+                                    pose.jumps < 2 &&
+                                    ((heightDiff > 80 && descending) ||
+                                        (dx > 150 && heightDiff > 60 && pose.vy > 50 && pose.vy < 220));
+
+                                const shouldTriple =
+                                    pose.jumps >= 2 &&
+                                    ((heightDiff > 150 && pose.vy > 110) ||
+                                        (dx > 220 && heightDiff > 70 && pose.vy > 70));
+
+                                if (shouldDouble || shouldTriple) {
+                                    requestJump(null, shouldTriple ? 'triple-air-jump' : 'double-air-jump');
+                                    if (shouldTriple) {
+                                        this.recordLog('TRIPLE_JUMP', pose, `dx=${Math.round(dx)} h=${Math.round(heightDiff)} vy=${Math.round(pose.vy)}`);
+                                    }
+                                }
+                            }
+
+                            // Dash Logic
+                            if (targetX !== null) {
+                                const dx = Math.abs(targetX - botCenterX);
+                                const moveDir = Math.sign(targetX - botCenterX);
+
+                                // Ground Dash: trigger when running along long stretches towards the target. 
+                                // Removed 'nav-approach' restriction because that blocked dashing while running to a jump.
+                                const wantsGroundDash = pose.grounded && !input.down && dx > 250 && Math.abs(heightDiff) < 40 && this.navState !== 'nav-ready' && this.navState !== 'nav-commit';
+
+                                // Air Dash: falling extremely fast and far horizontally. The Random check was evaluated 60 times a second previously, causing instant procs.
+                                // Now strictly reserved for deep free-fall recovery.
+                                const wantsAirDash = !pose.grounded && pose.state !== 'wall-slide' && pose.state !== 'climb' && pose.vy > 400 && dx > 250;
+
+                                if (wantsGroundDash || wantsAirDash) {
+                                    // Ensure we have a relatively clear path ahead
+                                    const dashProbeX1 = moveDir > 0 ? pose.x + pose.width : pose.x - 100;
+                                    const dashProbeX2 = moveDir > 0 ? pose.x + pose.width + 100 : pose.x;
+
+                                    // For ground dashes, ensure there is ground ahead so we don't sprint off an unintended cliff
+                                    let hasGroundAhead = true;
+                                    if (wantsGroundDash) {
+                                        hasGroundAhead = this.world.query({
+                                            x1: dashProbeX1,
+                                            y1: pose.y + pose.height + 2,
+                                            x2: dashProbeX2,
+                                            y2: pose.y + pose.height + 40
+                                        }).some(c => c.kind === 'rect' && c.flags.solid);
+                                    }
+
+                                    const dashClear = hasGroundAhead && !this.world.query({
+                                        x1: dashProbeX1,
+                                        y1: pose.y + 10,
+                                        x2: dashProbeX2,
+                                        y2: pose.y + pose.height - 10
+                                    }).some(c => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay);
+
+                                    if (dashClear) {
+                                        input.dash = true;
+                                        // Log it just for debug
+                                        if (Math.random() < 0.05) {
+                                            this.recordLog('DASH_INTENT', pose, wantsGroundDash ? 'ground-sprint' : 'air-dash');
+                                        }
+                                    }
+                                }
                             }
                         }
-                    }
-                }
-            }
-        }
 
-        // 3. Gap Handling (skip during backup phase — bot is deliberately retreating)
-        const targetIsBelow = targetY !== null && targetY > (botFeetY + 10);
-        const lookAhead = input.right ? 25 : input.left ? -25 : 0;
-        const jumpAllowed = this.navState === 'nav-ready';
-        const canEarlyHighJump = this.navState === 'nav-approach'
-            && this.approachPhase === 'direct'
-            && targetX !== null
-            && targetY !== null
-            && heightDiff > 40;
 
-        if (lookAhead !== 0 && pose.grounded && this.currentState === 'seek' && this.approachPhase !== 'backup' && !targetIsBelow && !input.down) {
-            const projectedFeet = { x1: pose.x + (input.right ? pose.width : 0) + lookAhead, y1: botFeetY, x2: pose.x + (input.right ? pose.width : 0) + lookAhead + 10, y2: botFeetY + 40 };
-            const projectedHasGround = this.world.query(projectedFeet).some(c => c.kind === 'rect');
-            debugSnapshot.gapProbe = projectedFeet;
-            debugSnapshot.gapProbeHasGround = projectedHasGround;
-            if (!projectedHasGround) {
-                const gapGauge = targetX !== null ? this.computeGaugedJump(pose, targetX - botCenterX, heightDiff) : null;
-                const hadJumpIntent = input.jump;
-                requestJump(gapGauge, 'gap-jump');
-                if (!hadJumpIntent && gapGauge !== null && input.jump) {
-                    this.recordLog('GAUGED_JUMP', pose, `reason=gap g=${gapGauge.toFixed(2)} dx=${Math.round(Math.abs(targetX! - botCenterX))} h=${Math.round(heightDiff)}`);
-                }
-            }
-        }
-
-        // 3b. Low Ceiling Handling (Crouch/Slide)
-        const currentBodyAABB = { x1: pose.x, y1: pose.y, x2: pose.x + pose.width, y2: botFeetY };
-        const isOverlap = (b: { x1: number, y1: number, x2: number, y2: number }) =>
-            currentBodyAABB.x1 < b.x2 && currentBodyAABB.x2 > b.x1 && currentBodyAABB.y1 < b.y2 && currentBodyAABB.y2 > b.y1;
-        let crouchClearancePath = false;
-        const suppressCeilingJump = this.ceilingJumpSuppressTimer > 0 && pose.grounded;
-
-        const lookAheadCrouch = input.right ? 42 : input.left ? -42 : 0;
-        const shouldConsiderCrouch =
-            lookAheadCrouch !== 0 &&
-            pose.grounded &&
-            !input.jump &&
-            this.approachPhase !== 'charge';
-
-        if (shouldConsiderCrouch) {
-            const ahead = Math.abs(lookAheadCrouch);
-            const headBox = {
-                x1: input.right ? pose.x + pose.width : pose.x - ahead,
-                y1: botFeetY - 38,
-                x2: input.right ? pose.x + pose.width + ahead : pose.x,
-                y2: botFeetY - 22
-            };
-            const kneeBox = {
-                x1: headBox.x1,
-                y1: botFeetY - 18,
-                x2: headBox.x2,
-                y2: botFeetY - 2
-            };
-
-            const headBang = this.world.query(headBox).some(c => c.kind === 'rect' && c.flags.solid && !isOverlap(c.aabb));
-            const kneeClear = !this.world.query(kneeBox).some(c => c.kind === 'rect' && c.flags.solid && !isOverlap(c.aabb));
-
-            if (headBang && kneeClear) {
-                input.down = true;
-                crouchClearancePath = true;
-                this.recordLog('CROUCH_PATH', pose, `dir=${input.right ? 'R' : 'L'} clearance=low-head`);
-            }
-        }
-
-        // Air tuck: while jumping toward higher targets, compress height to pass low overhead slots.
-        const shouldConsiderAirTuck =
-            !pose.grounded &&
-            targetY !== null &&
-            heightDiff > 12 &&
-            pose.state !== 'wall-slide' &&
-            pose.state !== 'climb';
-
-        if (shouldConsiderAirTuck) {
-            const travelDir = input.right ? 1 : input.left ? -1 : (pose.vx > 25 ? 1 : pose.vx < -25 ? -1 : 0);
-            const leadX = travelDir * 10;
-            const airTuckProbe = {
-                x1: pose.x + 2 + leadX,
-                y1: pose.y - 14,
-                x2: pose.x + pose.width - 2 + leadX,
-                y2: pose.y + 12
-            };
-            const nearCeiling = this.world.query(airTuckProbe)
-                .some(c => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay && !isOverlap(c.aabb));
-            const nearTargetColumn = targetX === null || Math.abs(targetX - botCenterX) <= 130;
-            const upwardOrEarlyFall = pose.vy < 120;
-            const airTuckWanted = nearCeiling && nearTargetColumn && upwardOrEarlyFall;
-
-            debugSnapshot.airTuckProbe = airTuckProbe;
-            debugSnapshot.airTuckWanted = airTuckWanted;
-            if (airTuckWanted) input.down = true;
-        } else {
-            debugSnapshot.airTuckProbe = null;
-            debugSnapshot.airTuckWanted = false;
-        }
-
-        // Low Ceiling / Head Bang
-        if (pose.grounded && (input.left || input.right)) {
-            const wallCheckDist = 30;
-            const tDir = input.right ? 1 : -1;
-            const wallBox = { x1: tDir > 0 ? pose.x + pose.width : pose.x - wallCheckDist, y1: pose.y, x2: tDir > 0 ? pose.x + pose.width + wallCheckDist : pose.x, y2: pose.y + pose.height - 10 };
-            if (this.world.query(wallBox).some(c => c.kind === 'rect' && c.flags.solid && !isOverlap(c.aabb)) && heightDiff > 10) {
-                if (crouchClearancePath || input.down || suppressCeilingJump) {
-                    // In tight horizontal lanes, keep crouching rather than forcing a jump.
-                    if (suppressCeilingJump) input.down = true;
-                    input.jump = false;
-                    input.jumpGauge = null;
-                } else {
-                    const ceilingQuery = { x1: pose.x + 2, y1: pose.y - 30, x2: pose.x + pose.width - 2, y2: pose.y - 2 };
-                    if (!this.world.query(ceilingQuery).some(c => c.flags.solid && !c.flags.oneWay && !isOverlap(c.aabb))) requestJump(null, 'wall-bang-hop');
-                }
-            }
-
-            // High Ground Jump (skip during backup phase — don't jump while retreating)
-            if ((jumpAllowed || canEarlyHighJump) && targetX !== null && this.approachPhase !== 'backup' && heightDiff > 12 && !input.down && !input.jump && !crouchClearancePath && !suppressCeilingJump) {
-                // Check if target requires more height than current ceiling allows
-                const clearanceNeeded = Math.min(100, heightDiff + 10);
-                const ceilingQuery = {
-                    x1: pose.x + 2,
-                    y1: pose.y - clearanceNeeded,
-                    x2: pose.x + pose.width - 2,
-                    y2: pose.y - 2
-                };
-
-                const blockedByCeiling = this.world.query(ceilingQuery).some(c => c.flags.solid && !c.flags.oneWay && !isOverlap(c.aabb));
-
-                if (!blockedByCeiling) {
-                    const dxAbs = Math.abs(targetX - botCenterX);
-                    const gauge = this.approachPhase === 'direct'
-                        ? this.computeGaugedJump(pose, targetX - botCenterX, heightDiff)
-                        : null;
-
-                    if (gauge !== null) {
-                        requestJump(gauge, 'direct-gauged-jump');
-                        if (input.jump) {
-                            this.recordLog('GAUGED_JUMP', pose, `reason=direct g=${gauge.toFixed(2)} dx=${Math.round(dxAbs)} h=${Math.round(heightDiff)}`);
+                        // Jump Cooldown
+                        const wallActionJump = input.jump && (pose.state === 'wall-slide' || pose.state === 'climb');
+                        if (this.jumpCooldown > 0) {
+                            this.jumpCooldown -= dt;
+                            if (!wallActionJump) {
+                                input.jump = false;
+                                input.jumpGauge = null;
+                            }
+                        } else if (input.jump) {
+                            this.jumpCooldown = wallActionJump ? 0.08 : 0.15;
                         }
-                    } else if (heightDiff > 20 && dxAbs < 160) {
-                        // Only auto-jump if we are reasonably close horizontally.
-                        // Otherwise, walk until we reach the gap/edge.
-                        requestJump(null, 'direct-full-jump');
+
+                        debugSnapshot.state = this.currentState;
+                        debugSnapshot.poseState = pose.state;
+                        debugSnapshot.navState = this.navState;
+                        debugSnapshot.approachPhase = this.approachPhase;
+                        debugSnapshot.ticTacActive = this.ticTacActive;
+                        debugSnapshot.ticTacDir = this.ticTacDir;
+                        debugSnapshot.ticTacWallHoldTimer = this.ticTacWallHoldTimer;
+                        debugSnapshot.ticTacJumpTimer = this.ticTacJumpTimer;
+                        debugSnapshot.ticTacPersistTimer = this.ticTacPersistTimer;
+                        debugSnapshot.takeoffZone = this.takeoffZone
+                            ? { minX: this.takeoffZone.minX, maxX: this.takeoffZone.maxX, facing: this.takeoffZone.facing }
+                            : null;
+                        debugSnapshot.maneuverId = this.activeManeuver ? this.activeManeuver.maneuverId : null;
+                        debugSnapshot.maneuverFromId = this.activeManeuverFromId;
+                        debugSnapshot.maneuverToId = this.activeManeuverToId;
+                        debugSnapshot.maneuverDistToTakeoff = Number.isFinite(this.bestDistToTakeoff) ? this.bestDistToTakeoff : null;
+                        debugSnapshot.maneuverLOS = this.bestLOS > 0;
+                        debugSnapshot.maneuverVerticalGain = Number.isFinite(this.bestVerticalGain) ? this.bestVerticalGain : null;
+                        debugSnapshot.maneuverStagnation = this.maneuverStagnationTimer;
+                        debugSnapshot.maneuverCommitted = this.maneuverCommitted;
+                        debugSnapshot.timers = {
+                            progressStagnation: this.progressStagnationTimer,
+                            jumpCooldown: this.jumpCooldown,
+                            wallDecision: this.wallDecisionTimer,
+                            wallSlide: this.wallSlideTimer,
+                            ceilingSuppress: this.ceilingJumpSuppressTimer,
+                            retryCount: this.retryCount
+                        };
+                        this.debugSnapshot = debugSnapshot;
                     }
                 }
             }
         }
-
-        // Drop Down (for full-width headers/footers where walking off the edge isn't possible)
-        // If target is significantly below us and we are horizontally aligned, drop through!
-        const groundedCollider = pose.groundedId !== null ? this.world.colliders.get(pose.groundedId) : undefined;
-
-        // If target is below and we're standing on a solid platform, commit to an edge drop plan.
-        if (pose.grounded && groundedCollider && !groundedCollider.flags.oneWay && targetX !== null && targetY !== null && heightDiff < -30) {
-            const seal = this.assessDownwardSeal(groundedCollider);
-            const downSealed = this.sealedDownIntentGrounds.has(groundedCollider.id);
-            if (seal.sealed && !downSealed) {
-                this.sealedDownIntentGrounds.add(groundedCollider.id);
-                this.recordLog(
-                    'DOWN_SEALED',
-                    pose,
-                    `ground=ID${groundedCollider.id} cov=${seal.coverage.toFixed(2)} open=${seal.openRun} walls=${seal.leftWall && seal.rightWall ? 'yy' : `${seal.leftWall ? 'y' : 'n'}${seal.rightWall ? 'y' : 'n'}`}`
-                );
-                this.invalidateActiveManeuver(pose, 'down-sealed', 8000);
-                if (!this.activeManeuver && this.targetPlatform) {
-                    this.graph.invalidateEdge(groundedCollider.id, this.targetPlatform.id, 'down-sealed', 8000);
-                }
-                this.reroute(pose, 'down-sealed');
-                this.downSealRerouteTimer = DOWN_SEAL_REROUTE_COOLDOWN;
-            }
-
-            if (this.sealedDownIntentGrounds.has(groundedCollider.id)) {
-                this.dropEdgeX = null;
-                this.dropGroundId = null;
-                this.dropLockTimer = 0;
-                debugSnapshot.dropPlannedEdgeX = null;
-                debugSnapshot.dropDirection = 0;
-                if (this.downSealRerouteTimer <= 0) {
-                    this.reroute(pose, 'down-sealed');
-                    this.downSealRerouteTimer = DOWN_SEAL_REROUTE_COOLDOWN;
-                }
-            } else {
-                const edgePad = 6;
-                const leftEdge = groundedCollider.aabb.x1 + edgePad;
-                const rightEdge = groundedCollider.aabb.x2 - edgePad;
-
-                const hasWallAtEdge = (edgeX: number, dir: -1 | 1) => {
-                    const probe = {
-                        x1: dir > 0 ? edgeX : edgeX - 18,
-                        y1: pose.y + 8,
-                        x2: dir > 0 ? edgeX + 18 : edgeX,
-                        y2: pose.y + pose.height - 8
-                    };
-                    return this.world.query(probe).some(c => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay && c.id !== groundedCollider.id);
-                };
-
-                const leftBlocked = hasWallAtEdge(leftEdge, -1);
-                const rightBlocked = hasWallAtEdge(rightEdge, 1);
-                const leftScore = Math.abs(targetX - leftEdge) + (leftBlocked ? 1000 : 0);
-                const rightScore = Math.abs(targetX - rightEdge) + (rightBlocked ? 1000 : 0);
-
-                const desiredEdge = rightScore <= leftScore ? rightEdge : leftEdge;
-                const sameGround = this.dropGroundId === groundedCollider.id;
-                const shouldReuseDropPlan = sameGround && this.dropEdgeX !== null && this.dropLockTimer > 0;
-                const chosenEdge = shouldReuseDropPlan ? this.dropEdgeX! : desiredEdge;
-                const dropRight = Math.abs(chosenEdge - rightEdge) <= Math.abs(chosenEdge - leftEdge);
-                const dropBlocked = dropRight ? rightBlocked : leftBlocked;
-
-                if (!shouldReuseDropPlan) {
-                    this.dropEdgeX = chosenEdge;
-                    this.dropGroundId = groundedCollider.id;
-                    this.dropLockTimer = 2.5; // Increased stickiness to ensure we reach the edge
-                    this.recordLog(
-                        'EDGE_DROP_PLAN',
-                        pose,
-                        `ground=ID${groundedCollider.id} edge=${Math.round(chosenEdge)} blocked=${dropBlocked ? 'y' : 'n'} targetDx=${Math.round(targetX - botCenterX)}`
-                    );
-                }
-
-                const dropDir: -1 | 1 = dropRight ? 1 : -1;
-                const dropExitX = chosenEdge + dropDir * (pose.width * 0.75 + 4);
-                const distFromEdge = Math.abs(chosenEdge - botCenterX);
-                const atEdge = distFromEdge < 26;
-
-                debugSnapshot.dropPlannedEdgeX = chosenEdge;
-                debugSnapshot.dropDirection = dropDir;
-
-                // Intent-stuck: we reached the drop edge and intend to fall, but downward motion never starts.
-                // In this physics model, downward velocity is +vy.
-                const intendsDrop = atEdge && !dropBlocked;
-                if (intendsDrop) {
-                    const sameIntent =
-                        this.dropIntentGroundId === groundedCollider.id
-                        && this.dropIntentEdgeX !== null
-                        && Math.abs(this.dropIntentEdgeX - chosenEdge) < 2;
-                    if (!sameIntent) {
-                        this.dropIntentGroundId = groundedCollider.id;
-                        this.dropIntentEdgeX = chosenEdge;
-                        this.dropIntentStuckTimer = 0;
-                    }
-
-                    const startedFalling = !pose.grounded || pose.vy >= EDGE_DROP_INTENT_FALL_VY;
-                    if (startedFalling) {
-                        this.resetDropIntentTracking();
-                    } else {
-                        this.dropIntentStuckTimer += dt;
-                    }
-
-                    if (!startedFalling && this.dropIntentStuckTimer > EDGE_DROP_INTENT_STUCK_WINDOW) {
-                        this.recordLog(
-                            'EDGE_DROP_INTENT_STUCK',
-                            pose,
-                            `ground=ID${groundedCollider.id} vy=${Math.round(pose.vy)} t=${this.dropIntentStuckTimer.toFixed(2)}`
-                        );
-                        if (this.targetPlatform) {
-                            this.graph.invalidateEdge(groundedCollider.id, this.targetPlatform.id, 'edge-drop-intent-stuck', 8000);
-                        }
-                        this.invalidateActiveManeuver(pose, 'edge-drop-intent-stuck', 8000);
-                        this.resetManeuverTracking();
-                        this.dropEdgeX = null;
-                        this.dropGroundId = null;
-                        this.dropLockTimer = 0;
-                        this.resetDropIntentTracking();
-                        this.reroute(pose, 'edge-drop-intent-stuck');
-                    }
-                } else {
-                    this.resetDropIntentTracking();
-                }
-
-                // Breakout logic for walled edges
-                if (atEdge && dropBlocked) {
-                    if (this.progressStagnationTimer > 1.2 && this.wallDecisionTimer <= 0) {
-                        requestJump(null, 'edge-drop-wall-hop');
-                        this.wallDecisionTimer = WALL_DECISION_COOLDOWN;
-                    }
-
-                    // If persistently blocked even after jump attempts, invalidate the edge/target.
-                    if (this.progressStagnationTimer > 2.5) {
-                        this.recordLog('EDGE_DROP_FAIL', pose, `blocked by wall at edge ID${groundedCollider.id}`);
-                        if (this.targetPlatform) {
-                            this.graph.invalidateEdge(groundedCollider.id, this.targetPlatform.id, 'edge-drop-blocked', 8000);
-                        }
-                        this.invalidateActiveManeuver(pose, 'edge-drop-blocked', 8000);
-                        this.resetManeuverTracking(); // Force re-evaluation
-                    }
-                }
-
-                // Horizontal Steering
-                input.right = dropDir > 0;
-                input.left = dropDir < 0;
-
-                // Keep crouch only when we explicitly detected a low-clearance horizontal path.
-                if (!crouchClearancePath) {
-                    input.down = false;
-                }
-            }
-        } else if (!pose.grounded || !groundedCollider || groundedCollider.flags.oneWay) {
-            this.dropEdgeX = null;
-            this.dropGroundId = null;
-            this.dropLockTimer = 0;
-            debugSnapshot.dropPlannedEdgeX = null;
-            debugSnapshot.dropDirection = 0;
-            this.downSealRerouteTimer = 0;
-        }
-
-        const canDropThroughGround = !!groundedCollider?.flags.oneWay;
-
-        if (pose.grounded && canDropThroughGround && targetX !== null && heightDiff < -30) {
-            const dx = Math.abs(targetX - botCenterX);
-            if (dx < 70) {
-                input.down = true;
-                requestJump(null, 'drop-through');
-            }
-        }
-
-        // Air jumps: choose between double or triple based on target gap.
-        if (!pose.grounded && pose.state !== 'wall-slide' && pose.jumps < MAX_TOTAL_JUMPS && targetX !== null) {
-            const dx = Math.abs(targetX - botCenterX);
-            const descending = pose.vy > 50;
-            const shouldDouble =
-                pose.jumps < 2 &&
-                ((heightDiff > 80 && descending) ||
-                    (dx > 150 && heightDiff > 60 && pose.vy > 50 && pose.vy < 220));
-
-            const shouldTriple =
-                pose.jumps >= 2 &&
-                ((heightDiff > 150 && pose.vy > 110) ||
-                    (dx > 220 && heightDiff > 70 && pose.vy > 70));
-
-            if (shouldDouble || shouldTriple) {
-                requestJump(null, shouldTriple ? 'triple-air-jump' : 'double-air-jump');
-                if (shouldTriple) {
-                    this.recordLog('TRIPLE_JUMP', pose, `dx=${Math.round(dx)} h=${Math.round(heightDiff)} vy=${Math.round(pose.vy)}`);
-                }
-            }
-        }
-
-        // Jump Cooldown
-        const wallActionJump = input.jump && (pose.state === 'wall-slide' || pose.state === 'climb');
-        if (this.jumpCooldown > 0) {
-            this.jumpCooldown -= dt;
-            if (!wallActionJump) {
-                input.jump = false;
-                input.jumpGauge = null;
-            }
-        } else if (input.jump) {
-            this.jumpCooldown = wallActionJump ? 0.08 : 0.15;
-        }
-
-        debugSnapshot.state = this.currentState;
-        debugSnapshot.poseState = pose.state;
-        debugSnapshot.navState = this.navState;
-        debugSnapshot.approachPhase = this.approachPhase;
-        debugSnapshot.ticTacActive = this.ticTacActive;
-        debugSnapshot.ticTacDir = this.ticTacDir;
-        debugSnapshot.ticTacWallHoldTimer = this.ticTacWallHoldTimer;
-        debugSnapshot.ticTacJumpTimer = this.ticTacJumpTimer;
-        debugSnapshot.ticTacPersistTimer = this.ticTacPersistTimer;
-        debugSnapshot.takeoffZone = this.takeoffZone
-            ? { minX: this.takeoffZone.minX, maxX: this.takeoffZone.maxX, facing: this.takeoffZone.facing }
-            : null;
-        debugSnapshot.maneuverId = this.activeManeuver ? this.activeManeuver.maneuverId : null;
-        debugSnapshot.maneuverFromId = this.activeManeuverFromId;
-        debugSnapshot.maneuverToId = this.activeManeuverToId;
-        debugSnapshot.maneuverDistToTakeoff = Number.isFinite(this.bestDistToTakeoff) ? this.bestDistToTakeoff : null;
-        debugSnapshot.maneuverLOS = this.bestLOS > 0;
-        debugSnapshot.maneuverVerticalGain = Number.isFinite(this.bestVerticalGain) ? this.bestVerticalGain : null;
-        debugSnapshot.maneuverStagnation = this.maneuverStagnationTimer;
-        debugSnapshot.maneuverCommitted = this.maneuverCommitted;
-        debugSnapshot.timers = {
-            progressStagnation: this.progressStagnationTimer,
-            jumpCooldown: this.jumpCooldown,
-            wallDecision: this.wallDecisionTimer,
-            wallSlide: this.wallSlideTimer,
-            ceilingSuppress: this.ceilingJumpSuppressTimer,
-            retryCount: this.retryCount
-        };
-        this.debugSnapshot = debugSnapshot;
-
         this.emitTransitionLogs(pose, input);
         return input;
     }
@@ -3734,6 +3895,12 @@ export class Brain {
     }
 
     private triggerLoopHardFallback(pose: Pose, signature: string, reason: string) {
+        if (this.manualMode) {
+            this.recordLog('MANUAL_GIVE_UP', pose, `loop detected: ${reason}`);
+            this.clearManualTarget();
+            return;
+        }
+
         const botCx = pose.x + pose.width / 2;
         const botFeetY = pose.y + pose.height;
 
@@ -3764,7 +3931,7 @@ export class Brain {
             }
         }
 
-        const primeFallbackTarget = (pick: Collider, mode: 'local-random' | 'global-nearest' | 'local-reachable' | 'local-reachable-biased' | 'mainland-anchor') => {
+        const primeFallbackTarget = (pick: Collider, mode: 'local-random' | 'global-nearest' | 'local-reachable' | 'local-reachable-biased' | 'mainland-anchor' | 'island-nearest') => {
             this.lockedTargetId = pick.id;
             this.setStationaryPlatformTarget(pick, botCx, true);
             this.resetManeuverTracking();
@@ -3794,7 +3961,71 @@ export class Brain {
         };
 
         if (reason.includes('island')) {
+            // Strategy 1: Pick the nearest visible platform, ignoring graph reachability.
+            // The graph is what says we're stuck, so bypassing it is the right move.
+            // CRITICAL: Use coordinate targeting (not platform targeting) so the bot
+            // enters the nav-ready-coord path and steers directly instead of re-entering
+            // the graph nav pipeline (which would immediately fail again).
+            const islandEscapePool = this.world.getAll().filter(c => {
+                if (c.kind !== 'rect' || !c.flags.solid) return false;
+                if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
+                if (pose.grounded && pose.groundedId === c.id) return false;
+                if (this.recentWarpDestinations.includes(c.id)) return false;
+                return true;
+            });
+            if (islandEscapePool.length > 0) {
+                // Sort by distance, pick from the nearest few
+                islandEscapePool.sort((a, b) => {
+                    const aCx = (a.aabb.x1 + a.aabb.x2) / 2;
+                    const bCx = (b.aabb.x1 + b.aabb.x2) / 2;
+                    const distA = Math.hypot(aCx - botCx, a.aabb.y1 - botFeetY);
+                    const distB = Math.hypot(bCx - botCx, b.aabb.y1 - botFeetY);
+                    return distA - distB;
+                });
+                const topCount = Math.min(3, islandEscapePool.length);
+                const pick = islandEscapePool[Math.floor(Math.random() * topCount)];
+
+                // Use coordinate targeting to bypass graph nav entirely.
+                // Setting targetPlatform = null ensures we hit the nav-ready-coord path
+                // which just steers directly toward the target coordinates.
+                const pickCx = (pick.aabb.x1 + pick.aabb.x2) / 2;
+                this.clearTargetLock();
+                this.targetPlatform = null;
+                this.targetX = pickCx;
+                this.autoTargetY = pick.aabb.y1;
+                this.resetManeuverTracking();
+                this.currentState = 'seek';
+                this.navState = 'nav-align';
+                this.bestProgressDist = Infinity;
+                this.progressStagnationTimer = 0;
+                this.fsmStagnationTimer = 0;
+                this.approachPhase = 'direct';
+                this.approachX = null;
+                this.moveCommitDir = 0;
+                this.moveCommitTimer = 0;
+                this.dropEdgeX = null;
+                this.dropGroundId = null;
+                this.dropLockTimer = 0;
+                this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, 4.0);
+                this.recentWarpDestinations.push(pick.id);
+                if (this.recentWarpDestinations.length > 5) this.recentWarpDestinations.shift();
+                this.recordLog('LOOP_FALLBACK', pose, `sig=${signature} ${reason}: island-coord ID${pick.id} (${Math.round(pickCx)},${Math.round(pick.aabb.y1)})`);
+                window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
+                    detail: {
+                        type: 'loop_fallback',
+                        reason,
+                        mode: 'island-coord',
+                        targetId: pick.id,
+                        targetX: pickCx,
+                        targetY: pick.aabb.y1
+                    }
+                }));
+                return;
+            }
+
+            // Strategy 2: Coordinate target as last resort
             if (this.tryPickCoordinateTarget(pose, this.world.getAll(), true, true)) {
+                this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, 4.0);
                 this.recordLog('LOOP_FALLBACK', pose, `sig=${signature} ${reason}: island-panic forced non-local coord`);
                 window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
                     detail: {
@@ -3973,7 +4204,7 @@ export class Brain {
      *  6. Fairness        — equalizer that penalises over-visited and rewards under-visited
      *  7. Line of sight   — visible platforms feel more intentional
      */
-    private scoreTarget(pose: Pose, c: Collider, avgVisits: number, now: number): number {
+    private scoreTarget(pose: Pose, c: Collider, avgVisits: number, now: number, pathCost: number | null = null): number {
         const botCx = pose.x + pose.width / 2;
         const botFeetY = pose.y + pose.height;
         const platCx = (c.aabb.x1 + c.aabb.x2) / 2;
@@ -4037,6 +4268,12 @@ export class Brain {
         }
         if (dy > MAX_SINGLE_HOP && dx < 100) {
             score += 5;
+        }
+
+        // 6. Path Complexity Penalty — avoid physically close targets that require convoluted graph traversal
+        if (pathCost !== null) {
+            const costExcess = Math.max(0, pathCost - dist);
+            score -= (costExcess * 0.25);
         }
 
         // Penalize highly vertical surfaces as primary targets (prevents wall-center lock).
@@ -4499,26 +4736,55 @@ export class Brain {
 
         // --- GRAPH REACHABILITY FILTER ---
         const startId = this.getPlanningStartId(pose);
+        let reachableCosts = new Map<number, number>();
+
         if (startId !== null && this.graph.nodes.has(startId)) {
             const node = this.graph.nodes.get(startId);
-            const hasExits = node && node.edges.some(e => e.invalidUntil <= performance.now());
-            if (!hasExits) {
-                this.recordLog('ISLAND_PANIC', pose, `ID${startId} has no valid exits`);
-                this.triggerLoopHardFallback(pose, `island-panic-ID${startId}`, 'island-panic');
-                return;
+            const now = performance.now();
+            const allEdges = node ? node.edges : [];
+            const validEdges = allEdges.filter(e => e.invalidUntil <= now);
+            if (validEdges.length === 0) {
+                if (allEdges.length > 0) {
+                    // Edges exist but ALL are temporarily invalidated.
+                    // This means the bot tried every exit and they all failed within the backoff window.
+                    // Force-clear invalidations so the bot can attempt them again with fresh state.
+                    // This breaks the island-panic → coordinate-target → fail → repick loop.
+                    for (const e of allEdges) {
+                        e.invalidUntil = 0;
+                        e.failureReason = null;
+                    }
+                    this.recordLog('ISLAND_EDGE_CLEAR', pose, `force-cleared ${allEdges.length} invalidated edges from ID${startId}`);
+                    // Fall through to normal scoring with fresh edges
+                } else {
+                    // Truly no edges — this node has no discovered maneuvers at all.
+                    // This is a real island (isolated platform).
+                    this.recordLog('ISLAND_PANIC', pose, `ID${startId} has no edges at all`);
+                    this.triggerLoopHardFallback(pose, `island-panic-ID${startId}`, 'island-panic');
+                    return;
+                }
             }
 
-            const reachableNow = scoringPool.filter((c) =>
-                this.findPathWithContext(startId, c.id, pose, false, 160) !== null
-            );
+            const reachableNow: Collider[] = [];
+            for (const c of scoringPool) {
+                const path = this.findPathWithContext(startId, c.id, pose, false, 160);
+                if (path !== null) {
+                    reachableNow.push(c);
+                    reachableCosts.set(c.id, path.totalCost);
+                }
+            }
             if (reachableNow.length > 0) {
                 this.recordLog('GRAPH_FILTER', pose, `reachable-now=${reachableNow.length}/${scoringPool.length}`);
                 scoringPool = reachableNow;
                 this.strandedTimer = 0;
             } else {
-                const reachableRelaxed = scoringPool.filter((c) =>
-                    this.findPathWithContext(startId, c.id, pose, true, 180) !== null
-                );
+                const reachableRelaxed: Collider[] = [];
+                for (const c of scoringPool) {
+                    const path = this.findPathWithContext(startId, c.id, pose, true, 180);
+                    if (path !== null) {
+                        reachableRelaxed.push(c);
+                        reachableCosts.set(c.id, path.totalCost);
+                    }
+                }
                 if (reachableRelaxed.length > 0) {
                     this.recordLog('GRAPH_RELAX', pose, `reachable-relaxed=${reachableRelaxed.length}/${scoringPool.length}`);
                     scoringPool = reachableRelaxed;
@@ -4563,7 +4829,7 @@ export class Brain {
 
         // Score every candidate
         const scoreNow = performance.now();
-        const scored = scoringPool.map(c => ({ collider: c, score: this.scoreTarget(pose, c, avgVisits, scoreNow) }));
+        const scored = scoringPool.map(c => ({ collider: c, score: this.scoreTarget(pose, c, avgVisits, scoreNow, reachableCosts.get(c.id) ?? null) }));
         const scoredBeforeReachFilter = scored.length;
 
         // When airborne, filter to trajectory-reachable platforms if any exist
@@ -5270,16 +5536,28 @@ export class Brain {
         const dxToTarget = ((targetMinX + targetMaxX) / 2) - ((myMinX + myMaxX) / 2);
         const facing = dxToTarget >= 0 ? 1 : -1;
 
-        // Sample points along the edge of the platform facing the target
+        const botCenterX = pose.x + pose.width / 2;
+        const testPoints: number[] = [];
+
+        // ALWAYS check the bot's current position as the FIRST valid takeoff point!
+        // This stops the bot from running past a viable jump point just to get to the edge.
+        if (botCenterX >= myMinX && botCenterX <= myMaxX) {
+            testPoints.push(botCenterX);
+        }
+
+        // Then sample points along the edge of the platform facing the target
         const step = 20;
         const startX = facing > 0 ? myMaxX : myMinX;
         const walkDir = -facing; // Walk backwards from edge
 
-        const testPoints = [];
-        for (let idx = 0; idx < 5; idx++) {
+        // Check 100px backwards from the edge
+        for (let idx = 0; idx < 6; idx++) {
             const px = startX + walkDir * (idx * step);
             if (px < myMinX || px > myMaxX) break;
-            testPoints.push(px);
+            // Avoid adding bot position twice (within a small tolerance)
+            if (Math.abs(px - botCenterX) > 5) {
+                testPoints.push(px);
+            }
         }
 
         // Test each point. First clear LOS wins as the "edge" of the zone.

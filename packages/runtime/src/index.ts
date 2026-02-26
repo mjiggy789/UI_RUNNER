@@ -112,19 +112,9 @@ class Runtime {
             if (this.brain.manualMode) {
                 const viewportX = e.pageX - window.scrollX;
                 const viewportY = e.pageY - window.scrollY;
-                const snapped = this.brain.setManualTarget(viewportX, viewportY);
-                if (snapped) {
-                    this.manualAnchor = {
-                        x: snapped.x + window.scrollX,
-                        y: snapped.y + window.scrollY
-                    };
-                    console.log(
-                        `ParkourBot: Manual Target snapped raw=(${Math.round(e.pageX)}, ${Math.round(e.pageY)}) -> page=(${Math.round(this.manualAnchor.x)}, ${Math.round(this.manualAnchor.y)})`
-                    );
-                } else {
-                    this.manualAnchor = null;
-                    console.log(`ParkourBot: Manual Target rejected at (${Math.round(e.pageX)}, ${Math.round(e.pageY)})`);
-                }
+                this.brain.setManualTarget(viewportX, viewportY);
+                this.manualAnchor = { x: e.pageX, y: e.pageY };
+                console.log(`ParkourBot: Manual Target at (${Math.round(viewportX)}, ${Math.round(viewportY)})`);
             }
         });
     }
@@ -1195,9 +1185,9 @@ class Runtime {
                 const lockedTarget = this.brain.lockedTargetId !== null
                     ? this.world.colliders.get(this.brain.lockedTargetId) ?? null
                     : null;
-                const resolvedTargetY = this.brain.targetPlatform?.aabb.y1
-                    ?? (this.brain.manualMode ? this.brain.manualTargetY : this.brain.autoTargetY)
-                    ?? null;
+                const resolvedTargetY = this.brain.manualMode
+                    ? (this.brain.manualTargetY ?? null)
+                    : (this.brain.targetPlatform?.aabb.y1 ?? this.brain.autoTargetY ?? null);
                 this.controller.brainTargetX = this.brain.targetX;
                 if (this.brain.targetX === null) {
                     this.targetYAnchor = null;

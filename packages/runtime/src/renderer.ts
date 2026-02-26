@@ -132,6 +132,30 @@ export class Renderer {
 
         this.spriteRenderer.draw(ctx, pose, brainState, controller.brainManualMode);
 
+        if (controller.brainManualMode && brainTargetX !== null && brainTargetY !== null) {
+            const tx = brainTargetX;
+            const ty = brainTargetY;
+            const size = 12;
+
+            ctx.save();
+            ctx.strokeStyle = '#00ffff';
+            ctx.lineWidth = 3;
+            // Draw reticle at exact click position
+            ctx.beginPath();
+            ctx.moveTo(tx - size, ty);
+            ctx.lineTo(tx + size, ty);
+            ctx.moveTo(tx, ty - size);
+            ctx.lineTo(tx, ty + size);
+            ctx.stroke();
+            // Draw center dot
+            ctx.fillStyle = '#00ffff';
+            ctx.fillRect(tx - 2, ty - 2, 4, 4);
+
+            ctx.font = 'bold 11px sans-serif';
+            ctx.fillText('MANUAL', tx - 22, ty - 16);
+            ctx.restore();
+        }
+
         if (debugEnabled) {
             const botCenterX = pose.x + pose.width / 2;
             const botCenterY = pose.y + pose.height / 2;
