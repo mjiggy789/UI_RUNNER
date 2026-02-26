@@ -15,7 +15,16 @@
         "forceConsistentCasingInFileNames": true,
         "composite": true,
         "outDir": "./dist",
-        "rootDir": "."
+        "rootDir": ".",
+        "baseUrl": ".",
+        "paths": {
+            "@parkour-bot/shared": [
+                "packages/shared/src/index"
+            ],
+            "@parkour-bot/runtime/*": [
+                "packages/runtime/src/*"
+            ]
+        }
     },
     "exclude": [
         "node_modules",
