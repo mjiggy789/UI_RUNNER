@@ -1,5 +1,5 @@
 
-import { SpatialGrid } from '../packages/runtime/src/world';
+import { SpatialGrid } from '@parkour-bot/runtime/world';
 import { AABB } from '@parkour-bot/shared';
 
 function check(condition: boolean, message: string) {

@@ -1,12 +1,5 @@
-type Collider = import('@parkour-bot/shared').Collider;
-const { computeWorldChecksum } = require('../packages/runtime/src/world-checksum') as {
-    computeWorldChecksum: (colliders: Iterable<Collider>) => {
-        colliderCount: number;
-        solidCount: number;
-        oneWayCount: number;
-        keyHash: number;
-    };
-};
+import { Collider } from '@parkour-bot/shared';
+import { computeWorldChecksum } from '@parkour-bot/runtime/world-checksum';
 
 function makeRect(
     id: number,
