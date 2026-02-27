@@ -301,6 +301,7 @@ export class NavGraph {
         const takeoffY = from.aabb.y1 - 14;
         const landingY = to.aabb.y1 - 14;
         const allowWallKickEnvelope = this.isWallish(from) || this.isWallish(to);
+        const losIgnore = new Set<number>([from.id, to.id]);
         const validTakeoffXs: number[] = [];
         const validLandingXs: number[] = [];
 
@@ -320,7 +321,7 @@ export class NavGraph {
                     const walkMax = to.aabb.x2 - 4;
                     if (stepLandingX >= walkMin && stepLandingX <= walkMax) {
                         if (
-                            this.world.hasLineOfSight(tx, takeoffY, stepLandingX, landingY) &&
+                            this.world.hasLineOfSight(tx, takeoffY, stepLandingX, landingY, losIgnore) &&
                             this.hasTravelClearance(tx, takeoffY, stepLandingX, landingY, from.id, to.id)
                         ) {
                             validTakeoffXs.push(tx);
@@ -346,7 +347,7 @@ export class NavGraph {
 
             const landingSamples = this.getLandingSamples(ballisticLandingMin, ballisticLandingMax);
             for (const lx of landingSamples) {
-                if (!this.world.hasLineOfSight(tx, takeoffY, lx, landingY)) continue;
+                if (!this.world.hasLineOfSight(tx, takeoffY, lx, landingY, losIgnore)) continue;
                 if (!this.hasTravelClearance(tx, takeoffY, lx, landingY, from.id, to.id)) continue;
                 validTakeoffXs.push(tx);
                 validLandingXs.push(lx);

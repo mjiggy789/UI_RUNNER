@@ -39,8 +39,8 @@ const LOOP_DETECT_FLIPS = 10;
 const LOOP_RECOVERY_COOLDOWN = 2.5;
 const CEILING_BONK_WINDOW = 1.2;
 const CEILING_BONK_REROUTE_HITS = 3;
-const CEILING_BONK_SUPPRESS_BASE = 0.3;
-const CEILING_BONK_SUPPRESS_STEP = 0.15;
+const CEILING_BONK_SUPPRESS_BASE = 0.45;
+const CEILING_BONK_SUPPRESS_STEP = 0.22;
 const CEILING_ARC_PROBE_TIME = 0.62;
 const CEILING_ARC_PROBE_SAMPLES = 10;
 const CEILING_ARC_PROBE_HALF_WIDTH = 9;
@@ -52,7 +52,7 @@ const CEILING_ARC_AIR_ACCEL = 800;
 const CEILING_ARC_TARGET_VX = 350;
 const CEILING_ARC_INVALIDATE_COOLDOWN = 0.9;
 const STEER_DEADZONE_BASE = 18;
-const STEER_DEADZONE_NEAR = 36;
+const STEER_DEADZONE_NEAR = 30;
 const STEER_DEADZONE_SLIDE = 34;
 const STEER_COMMIT_HOLD_BASE = 0.24;
 const STEER_COMMIT_HOLD_NEAR = 0.32;
@@ -99,6 +99,9 @@ const WAYPOINT_SWITCH_HOLD_MS = 1350;
 const WAYPOINT_SWITCH_MARGIN = 85;
 const WAYPOINT_RECENT_SWITCH_WINDOW_MS = 3200;
 const WAYPOINT_RECENT_SWITCH_PENALTY = 140;
+const PLATFORM_AIM_REFERENCE_BLEND = 0.82;
+const PLATFORM_AIM_MAX_BIAS = 52;
+const PLATFORM_AIM_MIN_WIDTH_FOR_BIAS = 90;
 const DOWN_SEAL_SAMPLE_STEP = 18;
 const DOWN_SEAL_SCAN_DEPTH = 26;
 const DOWN_SEAL_SAMPLE_HALF = 3;
@@ -125,6 +128,10 @@ const LOOP_SIGNATURE_WINDOW_MS = 60000;
 const LOOP_SIGNATURE_ESCALATE_COUNT = 3;
 const LOOP_FALLBACK_IDLE_MIN = 0.22;
 const LOOP_FALLBACK_IDLE_MAX = 0.45;
+const ISLAND_EDGE_ESCAPE_X_PAD = 28;
+const ISLAND_EDGE_ESCAPE_DROP_Y = 150;
+const ISLAND_EDGE_ESCAPE_FREEZE = 3.2;
+const ISLAND_EDGE_ESCAPE_COMMIT = 0.95;
 const WORLD_CHECKSUM_COLLIDER_TOL = 2;
 const WORLD_CHECKSUM_ONEWAY_TOL = 1;
 const WORLD_CHECKSUM_DRIFT_CONFIRM_REVISIONS = 2;
@@ -134,10 +141,23 @@ const PROGRESS_SCALAR_EPS = 4;
 const PROGRESS_REPLAN_EPS = 8;
 const PROGRESS_REPLAN_GATE_TICKS = 10;
 const PROGRESS_FLAT_RESET_TICKS = 52;
+const PROGRESS_FLAT_RESET_MIN_SEEK_SEC = 1.8;
+const PROGRESS_FLAT_RESET_MIN_SEEK_DROP_SEC = 3.2;
 const PROGRESS_RESET_COOLDOWN = 0.9;
 const PING_PONG_COMMIT_MIN = 0.65;
 const PING_PONG_COMMIT_MAX = 1.1;
 const SEEK_HARD_CEILING = 20.0;
+const TARGET_PICK_DOMINANCE_GAP = 18;
+const ISLAND_MODE_LATCH_SEC = 3.8;
+const ISLAND_MODE_FREEZE_SEC = 2.4;
+const ESCALATION_TIMER_FLOOR = 0.45;
+const RECENT_WARP_HISTORY = 7;
+const REGION_BLACKLIST_TTL_MS = 7000;
+const REGION_BLACKLIST_MAX_ENTRIES = 28;
+const REGION_FAILURE_SIGNATURE_TTL_MS = 14000;
+const REGION_FAILURE_SIGNATURE_ESCALATE = 3;
+const CORRIDOR_FAILURE_TTL_MS = 9000;
+const CORRIDOR_FAILURE_PENALTY = 140;
 
 export interface BrainLogEntry {
     time: string;
@@ -219,6 +239,13 @@ type BreadcrumbPenaltyState = {
     value: number;
     appliedAt: number;
     expiresAt: number;
+};
+
+type RegionBlacklistEntry = {
+    targetId: number | null;
+    expiresAt: number;
+    reason: string;
+    hits: number;
 };
 
 export interface BrainDebugAABB {
@@ -398,7 +425,14 @@ export class Brain {
     detourPlanner: DetourPlanner;
     isDetourActive: boolean = false;
     panicLatchTimer: number = 0;
+    islandModeActive: boolean = false;
+    islandModeUntil: number = 0;
+    islandTrapCount: number = 0;
+    islandModeGroundId: number | null = null;
     private recentUnreachable: Map<number, { targetId: number; time: number }[]> = new Map();
+    private regionBlacklist: Map<number, Map<string, RegionBlacklistEntry>> = new Map();
+    private regionFailureSignatures: Map<string, { count: number; expiresAt: number }> = new Map();
+    private corridorFailureMemory: Map<string, number> = new Map();
     private ticTacCooldowns: Map<string, number> = new Map();
 
     // --- State Machine ---
@@ -506,6 +540,9 @@ export class Brain {
     setManualTarget(x: number, y: number): { x: number; y: number } | null {
         this.manualMode = true;
         this.clearTargetLock();
+        this.islandModeActive = false;
+        this.islandModeUntil = 0;
+        this.islandModeGroundId = null;
         this.resetSeekDiagnostics();
 
         // Target IS the raw click — no snapping, no platform lock.
@@ -557,12 +594,18 @@ export class Brain {
         this.recentTransitions = [];
         this.breadcrumbTargetPenalty.clear();
         this.loopSignatureHits.clear();
+        this.regionBlacklist.clear();
+        this.regionFailureSignatures.clear();
+        this.corridorFailureMemory.clear();
         return { x, y };
     }
 
     clearManualTarget() {
         this.manualMode = false;
         this.clearTargetLock();
+        this.islandModeActive = false;
+        this.islandModeUntil = 0;
+        this.islandModeGroundId = null;
         this.resetSeekDiagnostics();
         this.manualTargetY = null;
         this.autoTargetY = null;
@@ -603,6 +646,9 @@ export class Brain {
         this.recentTransitions = [];
         this.breadcrumbTargetPenalty.clear();
         this.loopSignatureHits.clear();
+        this.regionBlacklist.clear();
+        this.regionFailureSignatures.clear();
+        this.corridorFailureMemory.clear();
     }
 
     updateManualTarget(x: number, y: number): { x: number; y: number } | null {
@@ -648,6 +694,13 @@ export class Brain {
         this.visitCounts.clear();
         this.lockFailCount = 0;
         this.highestReached = Infinity;
+        this.islandModeActive = false;
+        this.islandModeUntil = 0;
+        this.islandTrapCount = 0;
+        this.islandModeGroundId = null;
+        this.regionBlacklist.clear();
+        this.regionFailureSignatures.clear();
+        this.corridorFailureMemory.clear();
 
         this.manualTargetY = null;
         this.autoTargetY = null;
@@ -838,13 +891,24 @@ export class Brain {
         return best;
     }
 
-    private getPlatformAimX(platform: Collider, _referenceX: number): number {
+    private getPlatformAimX(platform: Collider, referenceX: number): number {
         const min = platform.aabb.x1 + 14;
         const max = platform.aabb.x2 - 14;
         const center = (platform.aabb.x1 + platform.aabb.x2) / 2;
         if (min >= max) return center;
-        // Keep platform targets stationary: always aim at a stable center anchor.
-        return Math.max(min, Math.min(max, center));
+
+        // Keep anchors stationary, but bias toward the approach side on wide platforms.
+        // This prevents navX from pinning hard-center and wasting movement on large ledges.
+        const span = max - min;
+        if (span < PLATFORM_AIM_MIN_WIDTH_FOR_BIAS) {
+            return Math.max(min, Math.min(max, center));
+        }
+
+        const clampedRef = Math.max(min, Math.min(max, referenceX));
+        const rawBias = (clampedRef - center) * PLATFORM_AIM_REFERENCE_BLEND;
+        const maxBias = Math.min(PLATFORM_AIM_MAX_BIAS, span * 0.34);
+        const biased = center + Math.max(-maxBias, Math.min(maxBias, rawBias));
+        return Math.max(min, Math.min(max, biased));
     }
 
     private setStationaryPlatformTarget(platform: Collider, referenceX: number, forceReanchor: boolean = false) {
@@ -892,6 +956,14 @@ export class Brain {
             this.autoTargetY = null;
             if (this.targetX === null) {
                 this.targetX = this.getPlatformAimX(refreshed, pose.x + pose.width / 2);
+            } else {
+                const minAim = refreshed.aabb.x1 + 14;
+                const maxAim = refreshed.aabb.x2 - 14;
+                if (minAim <= maxAim) {
+                    this.targetX = Math.max(minAim, Math.min(maxAim, this.targetX));
+                } else {
+                    this.targetX = (refreshed.aabb.x1 + refreshed.aabb.x2) / 2;
+                }
             }
             return;
         }
@@ -1279,8 +1351,7 @@ export class Brain {
         const now = performance.now();
         const list = this.recentUnreachable.get(groundedId) || [];
         list.push({ targetId, time: now });
-        // Prune old entries (5s lifetime)
-        const fresh = list.filter(e => now - e.time < 5000);
+        const fresh = list.filter(e => now - e.time < REGION_BLACKLIST_TTL_MS);
         this.recentUnreachable.set(groundedId, fresh);
     }
 
@@ -1289,12 +1360,187 @@ export class Brain {
         if (!list) return false;
         const now = performance.now();
         // Lazy cleanup during read
-        const fresh = list.filter(e => now - e.time < 5000);
+        const fresh = list.filter(e => now - e.time < REGION_BLACKLIST_TTL_MS);
         if (fresh.length !== list.length) {
             if (fresh.length === 0) this.recentUnreachable.delete(groundedId);
             else this.recentUnreachable.set(groundedId, fresh);
         }
         return fresh.some(e => e.targetId === targetId);
+    }
+
+    private getRegionTargetKey(targetId: number): string {
+        return `target:${targetId}`;
+    }
+
+    private getRegionEdgeKey(fromId: number, toId: number, maneuverId?: string): string {
+        return maneuverId
+            ? `edge:${fromId}->${toId}|${maneuverId}`
+            : `edge:${fromId}->${toId}`;
+    }
+
+    private pruneRegionBlacklist(now: number = performance.now()) {
+        for (const [groundedId, entries] of this.regionBlacklist.entries()) {
+            for (const [key, entry] of entries.entries()) {
+                if (entry.expiresAt <= now) {
+                    entries.delete(key);
+                }
+            }
+            if (entries.size === 0) {
+                this.regionBlacklist.delete(groundedId);
+            }
+        }
+    }
+
+    private pruneRegionFailureSignatures(now: number = performance.now()) {
+        for (const [key, value] of this.regionFailureSignatures.entries()) {
+            if (value.expiresAt <= now) {
+                this.regionFailureSignatures.delete(key);
+            }
+        }
+    }
+
+    private pruneCorridorFailureMemory(now: number = performance.now()) {
+        for (const [key, expiresAt] of this.corridorFailureMemory.entries()) {
+            if (expiresAt <= now) this.corridorFailureMemory.delete(key);
+        }
+    }
+
+    private addRegionBlacklistEntry(
+        groundedId: number,
+        key: string,
+        targetId: number | null,
+        reason: string,
+        ttlMs: number = REGION_BLACKLIST_TTL_MS
+    ) {
+        const now = performance.now();
+        const entries = this.regionBlacklist.get(groundedId) ?? new Map<string, RegionBlacklistEntry>();
+        const prev = entries.get(key);
+        entries.set(key, {
+            targetId,
+            reason,
+            hits: (prev?.hits ?? 0) + 1,
+            expiresAt: now + ttlMs
+        });
+
+        if (entries.size > REGION_BLACKLIST_MAX_ENTRIES) {
+            const ordered = Array.from(entries.entries())
+                .sort((a, b) => a[1].expiresAt - b[1].expiresAt);
+            while (ordered.length > REGION_BLACKLIST_MAX_ENTRIES) {
+                const remove = ordered.shift();
+                if (!remove) break;
+                entries.delete(remove[0]);
+            }
+        }
+        this.regionBlacklist.set(groundedId, entries);
+    }
+
+    private noteRegionFailureSignature(groundedId: number, signature: string): number {
+        const now = performance.now();
+        this.pruneRegionFailureSignatures(now);
+        const key = `${groundedId}|${signature}`;
+        const prev = this.regionFailureSignatures.get(key);
+        const count = prev && prev.expiresAt > now ? prev.count + 1 : 1;
+        this.regionFailureSignatures.set(key, {
+            count,
+            expiresAt: now + REGION_FAILURE_SIGNATURE_TTL_MS
+        });
+        return count;
+    }
+
+    private recordRegionFailure(
+        pose: Pose,
+        groundedId: number | null,
+        targetId: number | null,
+        reason: string,
+        options?: {
+            maneuverId?: string;
+            ttlMs?: number;
+            edgeOnly?: boolean;
+        }
+    ): number {
+        if (groundedId === null || targetId === null) return 0;
+
+        const ttlMs = options?.ttlMs ?? REGION_BLACKLIST_TTL_MS;
+        if (!options?.edgeOnly) {
+            this.markTargetUnreachable(groundedId, targetId);
+            this.addRegionBlacklistEntry(
+                groundedId,
+                this.getRegionTargetKey(targetId),
+                targetId,
+                reason,
+                ttlMs
+            );
+        }
+
+        this.addRegionBlacklistEntry(
+            groundedId,
+            this.getRegionEdgeKey(groundedId, targetId, options?.maneuverId),
+            targetId,
+            reason,
+            ttlMs
+        );
+
+        this.corridorFailureMemory.set(`${groundedId}->${targetId}`, performance.now() + CORRIDOR_FAILURE_TTL_MS);
+
+        const hits = this.noteRegionFailureSignature(groundedId, `${targetId}:${reason}`);
+        if (hits >= REGION_FAILURE_SIGNATURE_ESCALATE) {
+            this.addRegionBlacklistEntry(
+                groundedId,
+                this.getRegionTargetKey(targetId),
+                targetId,
+                `${reason}:repeat`,
+                Math.round(ttlMs * 1.6)
+            );
+            this.recordLog(
+                'REGION_ESCALATE',
+                pose,
+                `ground=ID${groundedId} target=ID${targetId} reason=${reason} hits=${hits}`
+            );
+            window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
+                detail: {
+                    type: 'region_failure_escalate',
+                    groundId: groundedId,
+                    targetId,
+                    reason,
+                    hits
+                }
+            }));
+        }
+
+        this.recordLog(
+            'REGION_BLACKLIST',
+            pose,
+            `ground=ID${groundedId} target=ID${targetId} reason=${reason} ttl=${Math.round(ttlMs / 1000)}s`
+        );
+        window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
+            detail: {
+                type: 'region_blacklist',
+                groundId: groundedId,
+                targetId,
+                reason,
+                ttlMs
+            }
+        }));
+
+        return hits;
+    }
+
+    private isRegionTargetBlacklisted(groundedId: number, targetId: number): boolean {
+        this.pruneRegionBlacklist();
+        const entries = this.regionBlacklist.get(groundedId);
+        if (!entries) return false;
+        if (entries.has(this.getRegionTargetKey(targetId))) return true;
+        return this.isTargetUnreachable(groundedId, targetId);
+    }
+
+    private getCorridorFailurePenalty(fromId: number, toId: number): number {
+        this.pruneCorridorFailureMemory();
+        const key = `${fromId}->${toId}`;
+        const expiresAt = this.corridorFailureMemory.get(key);
+        if (!expiresAt) return 0;
+        const remaining = Math.max(0, expiresAt - performance.now());
+        const scaled = Math.min(CORRIDOR_FAILURE_PENALTY, remaining / 55);
+        return Math.max(40, scaled);
     }
 
     private invalidatePlanForWorldDrift(pose: Pose, prev: WorldChecksum, next: WorldChecksum) {
@@ -1618,6 +1864,7 @@ export class Brain {
             this.invalidateActiveManeuver(pose, failureTag, 8000);
         } else if (pose.groundedId !== null && this.targetPlatform) {
             this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, failureTag, 8000);
+            this.recordRegionFailure(pose, pose.groundedId, this.targetPlatform.id, failureTag, { ttlMs: 8000 });
         }
 
         this.recordLog(
@@ -1846,7 +2093,9 @@ export class Brain {
                 return;
             }
 
-            const suppressCeilingJump = this.ceilingJumpSuppressTimer > 0 && pose.grounded && reason !== 'drop-through';
+            // After a ceiling bonk, suppress jump spam for a short window so we can
+            // run out of the trap instead of repeatedly re-bonking.
+            const suppressCeilingJump = this.ceilingJumpSuppressTimer > 0 && reason !== 'drop-through';
             if (suppressCeilingJump) {
                 if (!loggedJumpBlocked) {
                     this.recordLog('JUMP_SUPPRESS', pose, `${reason} ceiling-bonk suppress=${this.ceilingJumpSuppressTimer.toFixed(2)}`);
@@ -1933,6 +2182,7 @@ export class Brain {
         }
         this.syncActiveManeuver(pose);
         this.sanitizeAutoTargetToPlatform(pose);
+        this.maybeExitIslandMode(pose);
 
         if (this.moveCommitTimer > 0) this.moveCommitTimer -= dt;
         if (this.panicLatchTimer > 0) this.panicLatchTimer -= dt;
@@ -2051,12 +2301,20 @@ export class Brain {
                     this.invalidateActiveManeuver(pose, 'ceiling-block', 8500);
                 } else if (pose.groundedId !== null && this.targetPlatform) {
                     this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, 'ceiling-block', 8500);
+                    this.recordRegionFailure(pose, pose.groundedId, this.targetPlatform.id, 'ceiling-block', { ttlMs: 9000 });
                 }
 
+                // Break out of wall/tic-tac climb loops and force lateral escape.
+                this.resetTicTacState();
+                this.resetShaftClimbState();
+                this.ticTacPersistTimer = 0;
+                const escapeDir: -1 | 1 = pose.vx >= 0 ? -1 : 1;
+                this.moveCommitDir = escapeDir;
+                this.moveCommitTimer = Math.max(this.moveCommitTimer, 0.65);
                 this.reroute(pose, 'ceiling-bonk-loop');
                 this.ceilingBonkCount = 0;
                 this.ceilingBonkWindow = 0;
-                this.ceilingJumpSuppressTimer = Math.max(this.ceilingJumpSuppressTimer, 0.55);
+                this.ceilingJumpSuppressTimer = Math.max(this.ceilingJumpSuppressTimer, 1.2);
             }
         }
 
@@ -2149,6 +2407,7 @@ export class Brain {
                     this.invalidateActiveManeuver(pose, trajectoryFailure, 8000);
                     if (!this.activeManeuver && pose.groundedId !== null && this.targetPlatform) {
                         this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, trajectoryFailure, 8000);
+                        this.recordRegionFailure(pose, pose.groundedId, this.targetPlatform.id, trajectoryFailure, { ttlMs: 9000 });
                     }
                     this.approachPhase = 'direct';
                     this.approachX = null;
@@ -2245,9 +2504,13 @@ export class Brain {
             }
 
             // === Anti-Stall Layer 2: hard ceiling watchdog ===
-            // Absolute upper bound on how long a single seek can run.
-            // If we exceed this, something is fundamentally wrong — force a full reset.
-            this.seekHardTimer += dt;
+            // Only accumulate while truly stuck on-ground with little horizontal motion.
+            // While airborne or actively traversing, decay this timer so we do not
+            // hard-reset healthy long seek sequences.
+            const seekNeedsTravel = targetX !== null && Math.abs(targetX - botCenterX) > 18;
+            const hardStuckNow = seekNeedsTravel && pose.grounded && Math.abs(pose.vx) < 18;
+            if (hardStuckNow) this.seekHardTimer += dt;
+            else this.seekHardTimer = Math.max(0, this.seekHardTimer - dt * 2.2);
             if (this.seekHardTimer > SEEK_HARD_CEILING) {
                 this.recordLog('SEEK_HARD_CEILING', pose, `${this.seekHardTimer.toFixed(1)}s in seek — hard reset`);
                 this.currentState = 'idle';
@@ -2292,34 +2555,44 @@ export class Brain {
                 this.updateProgressScalar(targetX, targetY, targetDx, targetDy, currentDist, hasGoalPressure);
 
                 if (this.progressFlatTicks >= PROGRESS_FLAT_RESET_TICKS) {
-                    if (this.manualMode && this.retryCount < 3) {
-                        this.retryCount++;
-                        this.progressStagnationTimer = 0;
-                        this.resetProgressTracking(this.getProgressAnchor(targetX, targetY));
-                        this.recordLog(
-                            'MANUAL_STALL_RETRY',
-                            pose,
-                            `retry ${this.retryCount}/3 flat=${this.progressFlatTicks} scalar=${Number.isFinite(this.progressScalar) ? this.progressScalar.toFixed(1) : '-'}`
-                        );
-                    } else {
-                        if (this.manualMode) {
-                            this.recordLog('MANUAL_GIVE_UP', pose, `flat progress scalar after ${this.retryCount} retries`);
-                            this.clearManualTarget();
+                    const dropLikeManeuver = this.activeManeuver !== null
+                        && (this.activeManeuver.action === 'drop-edge' || this.activeManeuver.action === 'drop' || this.activeManeuver.action === 'walk');
+                    const flatResetDelay = dropLikeManeuver
+                        ? PROGRESS_FLAT_RESET_MIN_SEEK_DROP_SEC
+                        : PROGRESS_FLAT_RESET_MIN_SEEK_SEC;
+
+                    // Guardrail: allow physical recovery paths (stuck-hop, edge-drop intent, local reroute)
+                    // to run before we hard-reset target selection on scalar flatness.
+                    if (this.progressStagnationTimer >= flatResetDelay) {
+                        if (this.manualMode && this.retryCount < 3) {
+                            this.retryCount++;
+                            this.progressStagnationTimer = 0;
+                            this.resetProgressTracking(this.getProgressAnchor(targetX, targetY));
+                            this.recordLog(
+                                'MANUAL_STALL_RETRY',
+                                pose,
+                                `retry ${this.retryCount}/3 flat=${this.progressFlatTicks} scalar=${Number.isFinite(this.progressScalar) ? this.progressScalar.toFixed(1) : '-'}`
+                            );
+                        } else {
+                            if (this.manualMode) {
+                                this.recordLog('MANUAL_GIVE_UP', pose, `flat progress scalar after ${this.retryCount} retries`);
+                                this.clearManualTarget();
+                                this.debugSnapshot = debugSnapshot;
+                                this.emitTransitionLogs(pose, input);
+                                return input;
+                            }
+                            this.forceProgressResetAndReselect(pose, 'progress-scalar-flat');
                             this.debugSnapshot = debugSnapshot;
                             this.emitTransitionLogs(pose, input);
                             return input;
                         }
-                        this.forceProgressResetAndReselect(pose, 'progress-scalar-flat');
-                        this.debugSnapshot = debugSnapshot;
-                        this.emitTransitionLogs(pose, input);
-                        return input;
                     }
                 }
 
                 // Count stagnation whenever an active target still requires movement.
                 // We cannot rely on input flags here because movement intent is decided later in this tick.
                 const isTryingToMove = hasGoalPressure || !pose.grounded || pose.state === 'wall-slide' || pose.state === 'climb';
-                if (isTryingToMove && this.navState !== 'nav-ready') {
+                if (isTryingToMove) {
                     this.progressStagnationTimer += dt;
                 }
 
@@ -2327,6 +2600,14 @@ export class Brain {
                 // Unlike progressStagnationTimer, this does NOT reset when distance improves.
                 if (this.navState !== 'nav-ready' && this.navState !== 'nav-commit') {
                     this.fsmStagnationTimer += dt;
+                } else if (hasGoalPressure) {
+                    // Even in nav-ready, if we have goal pressure (want to move)
+                    // we should increment stagnation if we are truly standing still.
+                    if (Math.abs(pose.vx) < 5) {
+                        this.fsmStagnationTimer += dt;
+                    } else {
+                        this.fsmStagnationTimer = Math.max(0, this.fsmStagnationTimer - dt * 2);
+                    }
                 } else {
                     this.fsmStagnationTimer = 0;
                 }
@@ -2366,10 +2647,14 @@ export class Brain {
                         if (this.navState === 'nav-approach' && this.targetPlatform) {
                             this.recordLog('NAV_APPROACH_FAIL', pose, 'timeout before takeoff zone');
                             this.takeoffCache.delete(this.targetPlatform.id);
+                            if (pose.groundedId !== null) {
+                                this.recordRegionFailure(pose, pose.groundedId, this.targetPlatform.id, 'NAV_APPROACH_FAIL', { ttlMs: 9000 });
+                            }
                         }
                         this.invalidateActiveManeuver(pose, 'seek-timeout', 8000);
                         if (!this.activeManeuver && pose.groundedId !== null && this.targetPlatform) {
                             this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, 'seek-timeout', 8000);
+                            this.recordRegionFailure(pose, pose.groundedId, this.targetPlatform.id, 'seek-timeout', { ttlMs: 9000 });
                         }
                         this.bestProgressDist = Infinity;
                         this.progressStagnationTimer = 0;
@@ -2510,6 +2795,16 @@ export class Brain {
                                             if (!this.activeManeuver && this.targetPlatform) {
                                                 this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, 'align-fail', 8000);
                                             }
+                                            const alignHits = this.recordRegionFailure(
+                                                pose,
+                                                pose.groundedId,
+                                                this.targetPlatform.id,
+                                                'NAV_ALIGN_FAIL',
+                                                { ttlMs: 9000 }
+                                            );
+                                            if (alignHits >= REGION_FAILURE_SIGNATURE_ESCALATE) {
+                                                this.enterIslandMode(pose, 'align-repeat');
+                                            }
                                             this.reroute(pose, 'align-fail');
                                         }
                                     }
@@ -2552,7 +2847,10 @@ export class Brain {
                             (moveDir < 0 && botCenterX < currentFloor.aabb.x1 + 40)
                         ) : false;
 
-                        if ((nearWall || nearEdge) && this.jumpCooldown <= 0) {
+                        const jumpSuppressed = this.ceilingJumpSuppressTimer > 0;
+                        const hasRunup = Math.abs(pose.vx) > 65 || Math.abs(targetX - botCenterX) > 28;
+                        const needsVertical = heightDiff > 20;
+                        if ((nearWall || nearEdge) && (hasRunup || needsVertical) && !jumpSuppressed && this.jumpCooldown <= 0) {
                             requestJump(null, nearWall ? 'island-wall-approach' : 'island-edge-hop');
                             this.recordLog('ISLAND_JUMP', pose, `${nearWall ? 'wall-approach' : 'edge-hop'} dir=${moveDir > 0 ? 'R' : 'L'} hdiff=${Math.round(heightDiff)}`);
                         }
@@ -2609,6 +2907,9 @@ export class Brain {
                                 if (this.navSlipCount > 3) {
                                     this.recordLog('NAV_SLIP_LOOP', pose, `count=${this.navSlipCount}`);
                                     this.invalidateActiveManeuver(pose, 'slip-loop', 8000);
+                                    if (pose.groundedId !== null && this.targetPlatform) {
+                                        this.recordRegionFailure(pose, pose.groundedId, this.targetPlatform.id, 'NAV_SLIP_LOOP', { ttlMs: 8500 });
+                                    }
                                     this.reroute(pose, 'slip-loop');
                                     return input;
                                 }
@@ -2633,12 +2934,12 @@ export class Brain {
 
                             if (isChargingAtSpeed) {
                                 this.patienceTimer = 0;
-                                // We do not require dynamic LOS here, only that the head is clear and we are settled.
-                                // If the jump fails physically, edge invalidation correctly blacklists the path.
-                            } else if (Math.abs(pose.vx) < 50 && !launchHeadBlocked) {
-                                this.patienceTimer -= dt;
-                            } else {
+                            } else if (launchHeadBlocked) {
+                                // If blocked by a ceiling while trying to jump,
+                                // stay in the state but increment fsm stagnation (handled above).
                                 this.patienceTimer = Math.max(this.patienceTimer, 0.08);
+                            } else {
+                                this.patienceTimer -= dt;
                             }
 
                             if (this.patienceTimer > 0) {
@@ -2746,11 +3047,16 @@ export class Brain {
                 }
 
                 const isDownwardTicTac = targetY !== null && heightDiff < -TIC_TAC_MIN_HEIGHT && (this.activeManeuver?.action === 'wall-slide' || this.ticTacActive);
+                if (this.ceilingJumpSuppressTimer > 0 && this.ticTacActive) {
+                    this.recordLog('TIC_TAC_END', pose, 'ceiling-suppress');
+                    this.resetTicTacState();
+                }
                 const ticTacEligible =
                     targetY !== null &&
                     (heightDiff > TIC_TAC_MIN_HEIGHT || isDownwardTicTac || this.ticTacActive) &&
                     !pose.grounded &&
                     !this.shaftClimbActive &&
+                    this.ceilingJumpSuppressTimer <= 0 &&
                     (ticTacCorridor !== null || this.ticTacPersistTimer > 0);
                 debugSnapshot.ticTacEligible = ticTacEligible;
                 let ticTacHandled = false;
@@ -3005,15 +3311,44 @@ export class Brain {
                                 moveDir = moveDx > 0 ? 1 : -1;
                             }
 
+                            // Coordinate escape can stall when targetX sits directly above the bot.
+                            // If we're trying to climb without a platform target, bias toward the
+                            // nearest edge to force lateral progress.
+                            if (
+                                moveDir === 0
+                                && this.targetPlatform === null
+                                && targetY !== null
+                                && heightDiff > 20
+                            ) {
+                                let escapeDir: -1 | 1 = targetX >= botCenterX ? 1 : -1;
+                                if (Math.abs(targetX - botCenterX) < 8) {
+                                    escapeDir = this.moveCommitDir !== 0
+                                        ? this.moveCommitDir
+                                        : (pose.facing >= 0 ? 1 : -1);
+                                }
+                                if (pose.grounded && pose.groundedId !== null) {
+                                    const ground = this.world.colliders.get(pose.groundedId);
+                                    if (ground) {
+                                        const leftDist = botCenterX - ground.aabb.x1;
+                                        const rightDist = ground.aabb.x2 - botCenterX;
+                                        escapeDir = rightDist < leftDist ? 1 : -1;
+                                    }
+                                }
+                                moveDir = escapeDir;
+                            }
+
                             // Trajectory Commitment: if airborne and committed, suppress braking/reversal
                             if (!pose.grounded && this.maneuverCommitted && moveDir !== 0) {
                                 const currentDir = pose.vx > 20 ? 1 : (pose.vx < -20 ? -1 : 0);
                                 if (currentDir !== 0 && moveDir !== currentDir) {
                                     // We are trying to reverse direction in air.
-                                    // If we are just overshooting slightly, let it fly to preserve momentum.
-                                    const overshoot = (currentDir > 0 && moveDx < -20) || (currentDir < 0 && moveDx > 20);
-                                    if (overshoot && Math.abs(moveDx) < 80) {
-                                        moveDir = currentDir; // Maintain course
+                                    // Suppression logic: don't suppress if we are very close to landing (dx < 40)
+                                    // or if we have overshot significantly (> 100px).
+                                    // Preserve momentum otherwise.
+                                    const overshoot = (currentDir > 0 && moveDx < -12) || (currentDir < 0 && moveDx > 12);
+                                    const nearTarget = Math.abs(moveDx) < 60;
+                                    if (overshoot && !nearTarget && Math.abs(moveDx) < 140) {
+                                        moveDir = currentDir;
                                     } else if (overshoot) {
                                         moveDir = 0; // Just drift, don't hard brake
                                     }
@@ -3042,15 +3377,15 @@ export class Brain {
                         }
 
                         if (this.panicLatchTimer > 0 && pose.grounded && pose.groundedId !== null && this.targetPlatform) {
-                            // Only freeze movement when using graph-based platform navigation.
-                            // When chasing a coordinate target (targetPlatform === null), the bot
-                            // MUST keep walking to escape the island.
+                            // No valid exits means the graph is currently unusable from this node.
+                            // Force a short directional commit instead of freezing in place.
                             const currentNode = this.graph.nodes.get(pose.groundedId);
                             const hasExits = currentNode && currentNode.edges.some(e => e.invalidUntil <= performance.now());
-                            if (!hasExits) {
-                                moveDir = 0;
-                                this.moveCommitDir = 0;
-                                this.moveCommitTimer = 0;
+                            if (!hasExits && shouldMoveHorizontally) {
+                                const forcedDir: -1 | 1 = moveDx >= 0 ? 1 : -1;
+                                moveDir = forcedDir;
+                                this.moveCommitDir = forcedDir;
+                                this.moveCommitTimer = Math.max(this.moveCommitTimer, 0.28);
                             }
                         }
 
@@ -3082,6 +3417,7 @@ export class Brain {
                         // suppress lateral dithering and commit to a vertical ascent attempt.
                         const overheadAligned =
                             pose.grounded &&
+                            this.targetPlatform !== null &&
                             targetX !== null &&
                             targetY !== null &&
                             this.approachPhase === 'direct' &&
@@ -3151,6 +3487,7 @@ export class Brain {
                                         this.invalidateActiveManeuver(pose, reason, 9000);
                                     } else if (pose.groundedId !== null && this.targetPlatform) {
                                         this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, reason, 9000);
+                                        this.recordRegionFailure(pose, pose.groundedId, this.targetPlatform.id, reason, { ttlMs: 9000 });
                                     }
                                     this.ceilingArcInvalidateTimer = CEILING_ARC_INVALIDATE_COOLDOWN;
                                     this.recordLog(
@@ -3292,7 +3629,7 @@ export class Brain {
                                 this.currentState = 'seek';
                                 this.bestProgressDist = Infinity;
                                 this.progressStagnationTimer = 0;
-                                this.retryCount = 0;
+                                this.retryCount = Math.max(1, this.retryCount);
                                 this.approachPhase = 'direct';
                                 this.approachX = null;
                                 this.moveCommitDir = 0;
@@ -3400,10 +3737,12 @@ export class Brain {
                                     if (this.navState === 'nav-approach') {
                                         this.recordLog('NAV_APPROACH_FAIL', pose, 'stuck before takeoff zone');
                                         this.takeoffCache.delete(this.targetPlatform.id);
+                                        this.recordRegionFailure(pose, pose.groundedId, this.targetPlatform.id, 'NAV_APPROACH_FAIL', { ttlMs: 9000 });
                                     }
                                     this.invalidateActiveManeuver(pose, 'stuck', 8000);
                                     if (!this.activeManeuver && pose.groundedId !== null && this.targetPlatform) {
                                         this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, 'stuck', 8000);
+                                        this.recordRegionFailure(pose, pose.groundedId, this.targetPlatform.id, 'stuck', { ttlMs: 8500 });
                                     }
                                     this.attemptBreadcrumbRecovery(pose, 'stuck');
                                 }
@@ -3581,6 +3920,7 @@ export class Brain {
                                     this.invalidateActiveManeuver(pose, 'down-sealed', 8000);
                                     if (!this.activeManeuver && this.targetPlatform) {
                                         this.graph.invalidateEdge(groundedCollider.id, this.targetPlatform.id, 'down-sealed', 8000);
+                                        this.recordRegionFailure(pose, groundedCollider.id, this.targetPlatform.id, 'down-sealed', { ttlMs: 9000 });
                                     }
                                     this.reroute(pose, 'down-sealed');
                                     this.downSealRerouteTimer = DOWN_SEAL_REROUTE_COOLDOWN;
@@ -3671,6 +4011,7 @@ export class Brain {
                                             );
                                             if (this.targetPlatform) {
                                                 this.graph.invalidateEdge(groundedCollider.id, this.targetPlatform.id, 'edge-drop-intent-stuck', 8000);
+                                                this.recordRegionFailure(pose, groundedCollider.id, this.targetPlatform.id, 'edge-drop-intent-stuck', { ttlMs: 9000 });
                                             }
                                             this.invalidateActiveManeuver(pose, 'edge-drop-intent-stuck', 8000);
                                             this.resetManeuverTracking();
@@ -3696,6 +4037,7 @@ export class Brain {
                                             this.recordLog('EDGE_DROP_FAIL', pose, `blocked by wall at edge ID${groundedCollider.id}`);
                                             if (this.targetPlatform) {
                                                 this.graph.invalidateEdge(groundedCollider.id, this.targetPlatform.id, 'edge-drop-blocked', 8000);
+                                                this.recordRegionFailure(pose, groundedCollider.id, this.targetPlatform.id, 'edge-drop-blocked', { ttlMs: 9000 });
                                             }
                                             this.invalidateActiveManeuver(pose, 'edge-drop-blocked', 8000);
                                             this.resetManeuverTracking(); // Force re-evaluation
@@ -3799,6 +4141,38 @@ export class Brain {
                             }
                         }
 
+
+                        // Last-resort steering guard: coordinate escape should never output zero
+                        // horizontal input for extended loops, or the bot can pogo in place.
+                        if (
+                            this.currentState === 'seek'
+                            && this.targetPlatform === null
+                            && targetX !== null
+                            && targetY !== null
+                            && this.navState === 'nav-ready'
+                            && !input.left
+                            && !input.right
+                            && heightDiff > 20
+                        ) {
+                            let steerDir: -1 | 1 = targetX >= botCenterX ? 1 : -1;
+                            if (Math.abs(targetX - botCenterX) < 8) {
+                                steerDir = this.moveCommitDir !== 0
+                                    ? this.moveCommitDir
+                                    : (pose.facing >= 0 ? 1 : -1);
+                            }
+                            if (pose.grounded && pose.groundedId !== null) {
+                                const ground = this.world.colliders.get(pose.groundedId);
+                                if (ground) {
+                                    const leftDist = botCenterX - ground.aabb.x1;
+                                    const rightDist = ground.aabb.x2 - botCenterX;
+                                    steerDir = rightDist < leftDist ? 1 : -1;
+                                }
+                            }
+                            input.left = steerDir < 0;
+                            input.right = steerDir > 0;
+                            this.moveCommitDir = steerDir;
+                            this.moveCommitTimer = Math.max(this.moveCommitTimer, 0.22);
+                        }
 
                         // Jump Cooldown
                         const wallActionJump = input.jump && (pose.state === 'wall-slide' || pose.state === 'climb');
@@ -3928,6 +4302,338 @@ export class Brain {
         return `(${platformId},${targetId},${state},${edgeId},${failReason})`;
     }
 
+    private boostRecoveryPressure(reason: string, extraFloor: number = 0): void {
+        if (this.manualMode) return;
+        this.retryCount = Math.min(24, this.retryCount + 1);
+        const floor = ESCALATION_TIMER_FLOOR + extraFloor + (reason.includes('island') ? 0.2 : 0);
+        this.progressStagnationTimer = Math.max(this.progressStagnationTimer, floor);
+        this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, floor);
+        this.stallTimer = Math.max(this.stallTimer, LOOP_WARN_STALL * 0.75);
+    }
+
+    private rememberWarpDestination(targetId: number): void {
+        this.recentWarpDestinations.push(targetId);
+        if (this.recentWarpDestinations.length > RECENT_WARP_HISTORY) {
+            this.recentWarpDestinations.shift();
+        }
+    }
+
+    private enterIslandMode(pose: Pose, reason: string, minLatchSec: number = ISLAND_MODE_LATCH_SEC): void {
+        const now = performance.now();
+        const wasActive = this.islandModeActive;
+        this.islandModeActive = true;
+        this.islandModeUntil = Math.max(this.islandModeUntil, now + minLatchSec * 1000);
+        this.islandModeGroundId = pose.groundedId ?? this.islandModeGroundId;
+        this.islandTrapCount = Math.min(this.islandTrapCount + 1, 999);
+        this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, ISLAND_MODE_FREEZE_SEC);
+        this.boostRecoveryPressure(reason, 0.2);
+
+        if (!wasActive) {
+            this.recordLog(
+                'ISLAND_MODE_ENTER',
+                pose,
+                `ground=ID${pose.groundedId ?? -1} latch=${minLatchSec.toFixed(1)}s reason=${reason}`
+            );
+            window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
+                detail: {
+                    type: 'island_mode_enter',
+                    reason,
+                    groundId: pose.groundedId,
+                    trapCount: this.islandTrapCount
+                }
+            }));
+        } else {
+            this.recordLog(
+                'ISLAND_MODE_LATCH',
+                pose,
+                `ground=ID${pose.groundedId ?? -1} until=${Math.round(this.islandModeUntil)} reason=${reason}`
+            );
+        }
+    }
+
+    private hasGraphReachableExit(startId: number, pose: Pose): boolean {
+        if (!this.graph.nodes.has(startId)) return false;
+        const strict = this.graph.getOutgoingEdges(startId, this.getPlannerContext(pose));
+        if (strict.some((edge) => edge.toId !== startId)) return true;
+        const relaxed = this.graph.getOutgoingEdges(startId, this.getPlannerContext(pose, true));
+        return relaxed.some((edge) => edge.toId !== startId);
+    }
+
+    private maybeExitIslandMode(pose: Pose): void {
+        if (!this.islandModeActive) return;
+        const now = performance.now();
+        if (now < this.islandModeUntil) return;
+        if (!pose.grounded || pose.groundedId === null) return;
+        if (!this.hasGraphReachableExit(pose.groundedId, pose)) {
+            this.islandModeUntil = now + 900;
+            return;
+        }
+
+        this.islandModeActive = false;
+        this.islandModeUntil = 0;
+        this.islandModeGroundId = null;
+        this.recordLog('ISLAND_MODE_EXIT', pose, `ground=ID${pose.groundedId}`);
+        window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
+            detail: {
+                type: 'island_mode_exit',
+                groundId: pose.groundedId
+            }
+        }));
+    }
+
+    private getGraphComponents(): { idByNode: Map<number, number>; sizeByComponent: Map<number, number> } {
+        const idByNode = new Map<number, number>();
+        const sizeByComponent = new Map<number, number>();
+        const adjacency = new Map<number, Set<number>>();
+
+        for (const [nodeId, node] of this.graph.nodes.entries()) {
+            if (!adjacency.has(nodeId)) adjacency.set(nodeId, new Set<number>());
+            for (const edge of node.edges) {
+                if (!adjacency.has(edge.toId)) adjacency.set(edge.toId, new Set<number>());
+                adjacency.get(nodeId)!.add(edge.toId);
+                adjacency.get(edge.toId)!.add(nodeId);
+            }
+        }
+
+        let componentId = 0;
+        for (const nodeId of adjacency.keys()) {
+            if (idByNode.has(nodeId)) continue;
+            const queue: number[] = [nodeId];
+            idByNode.set(nodeId, componentId);
+            let size = 0;
+            while (queue.length > 0) {
+                const current = queue.shift();
+                if (current === undefined) break;
+                size++;
+                const neighbors = adjacency.get(current);
+                if (!neighbors) continue;
+                for (const next of neighbors) {
+                    if (idByNode.has(next)) continue;
+                    idByNode.set(next, componentId);
+                    queue.push(next);
+                }
+            }
+            sizeByComponent.set(componentId, size);
+            componentId++;
+        }
+
+        return { idByNode, sizeByComponent };
+    }
+
+    private findReachableMainlandCandidate(pose: Pose, botCx: number, botFeetY: number): Collider | null {
+        if (!pose.grounded || pose.groundedId === null) return null;
+        const startId = pose.groundedId;
+        if (!this.graph.nodes.has(startId)) return null;
+
+        const now = performance.now();
+        const { idByNode, sizeByComponent } = this.getGraphComponents();
+        const startComponent = idByNode.get(startId) ?? -1;
+        const global = this.world.getAll().filter((c) => {
+            if (c.kind !== 'rect' || !c.flags.solid) return false;
+            if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
+            if (c.id === startId) return false;
+            if (this.targetPlatform && c.id === this.targetPlatform.id) return false;
+            if (this.recentWarpDestinations.includes(c.id)) return false;
+            if (this.isRegionTargetBlacklisted(startId, c.id)) return false;
+            return true;
+        });
+
+        let best: { collider: Collider; score: number } | null = null;
+        for (const c of global) {
+            if (!this.graph.nodes.has(c.id)) continue;
+            const path = this.findPathWithContext(startId, c.id, pose, true, 240);
+            if (!path || path.nodes.length < 2) continue;
+
+            const node = this.graph.nodes.get(c.id);
+            const validExitCount = node
+                ? node.edges.reduce((count, edge) => count + (edge.invalidUntil <= now ? 1 : 0), 0)
+                : 0;
+            if (validExitCount <= 0) continue;
+
+            const cx = (c.aabb.x1 + c.aabb.x2) / 2;
+            const dist = Math.hypot(cx - botCx, c.aabb.y1 - botFeetY);
+            const compId = idByNode.get(c.id) ?? -1;
+            const compSize = sizeByComponent.get(compId) ?? 1;
+            const crossComponentBonus = compId !== startComponent ? 170 : 0;
+            const routePotential = Math.min(120, validExitCount * 14 + compSize * 1.8);
+            const corridorPenalty = this.getCorridorFailurePenalty(startId, c.id);
+            const score = crossComponentBonus + routePotential + Math.min(110, dist * 0.12) - path.totalCost * 0.34 - corridorPenalty;
+            if (!best || score > best.score) {
+                best = { collider: c, score };
+            }
+        }
+
+        return best?.collider ?? null;
+    }
+
+    private findDirectedEscapeBase(pose: Pose, botCx: number, botFeetY: number): Collider | null {
+        const groundedId = pose.groundedId;
+        const { idByNode, sizeByComponent } = this.getGraphComponents();
+        const currentComponent = groundedId !== null ? (idByNode.get(groundedId) ?? -1) : -1;
+        const candidates = this.world.getAll().filter((c) => {
+            if (c.kind !== 'rect' || !c.flags.solid) return false;
+            if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
+            if (groundedId !== null && c.id === groundedId) return false;
+            if (this.recentWarpDestinations.includes(c.id)) return false;
+            return true;
+        });
+
+        let best: { collider: Collider; score: number } | null = null;
+        for (const c of candidates) {
+            const cx = (c.aabb.x1 + c.aabb.x2) / 2;
+            const dist = Math.hypot(cx - botCx, c.aabb.y1 - botFeetY);
+            const compId = idByNode.get(c.id) ?? -1;
+            const compSize = sizeByComponent.get(compId) ?? 1;
+            const routePotential = this.graph.nodes.has(c.id)
+                ? Math.min(120, (this.graph.nodes.get(c.id)?.edges.length ?? 0) * 9 + compSize * 2.2)
+                : 0;
+            const crossComponentBonus = compId !== currentComponent ? 180 : 0;
+            const verticalBonus = c.aabb.y1 < botFeetY ? 36 : 0;
+            const score = crossComponentBonus + routePotential + verticalBonus + Math.min(140, dist * 0.18);
+            if (!best || score > best.score) {
+                best = { collider: c, score };
+            }
+        }
+
+        return best?.collider ?? null;
+    }
+
+    private activateCoordinateEscapeFromCollider(
+        pose: Pose,
+        pick: Collider,
+        signature: string,
+        reason: string,
+        mode: 'coordinate' | 'island-coord' | 'directed-coord'
+    ): void {
+        const pickCx = (pick.aabb.x1 + pick.aabb.x2) / 2;
+        this.clearTargetLock();
+        this.targetPlatform = null;
+        this.targetX = pickCx;
+        this.autoTargetY = pick.aabb.y1;
+        this.resetManeuverTracking();
+        this.currentState = 'seek';
+        this.navState = 'nav-ready';
+        this.bestProgressDist = Infinity;
+        this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
+        this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
+        this.approachPhase = 'direct';
+        this.approachX = null;
+        this.moveCommitDir = 0;
+        this.moveCommitTimer = 0;
+        this.dropEdgeX = null;
+        this.dropGroundId = null;
+        this.dropLockTimer = 0;
+        this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, this.islandModeActive ? ISLAND_MODE_FREEZE_SEC : 1.5);
+        this.rememberWarpDestination(pick.id);
+        this.recordLog(
+            'LOOP_FALLBACK',
+            pose,
+            `sig=${signature} ${reason}: ${mode} ID${pick.id} (${Math.round(pickCx)},${Math.round(pick.aabb.y1)})`
+        );
+        window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
+            detail: {
+                type: 'loop_fallback',
+                reason,
+                mode,
+                targetId: pick.id,
+                targetX: pickCx,
+                targetY: pick.aabb.y1
+            }
+        }));
+    }
+
+    private tryStartIslandEdgeEscape(pose: Pose, signature: string, reason: string): boolean {
+        if (!pose.grounded || pose.groundedId === null) return false;
+        const ground = this.world.colliders.get(pose.groundedId);
+        if (!ground || ground.kind !== 'rect' || !ground.flags.solid) return false;
+        this.enterIslandMode(pose, reason);
+
+        const botCx = pose.x + pose.width / 2;
+        const edgePad = 6;
+        const leftEdge = ground.aabb.x1 + edgePad;
+        const rightEdge = ground.aabb.x2 - edgePad;
+        if (leftEdge >= rightEdge) return false;
+
+        const hasWallAtEdge = (edgeX: number, dir: -1 | 1): boolean => {
+            const probe: AABB = {
+                x1: dir > 0 ? edgeX : edgeX - 18,
+                y1: pose.y + 8,
+                x2: dir > 0 ? edgeX + 18 : edgeX,
+                y2: pose.y + pose.height - 8
+            };
+            return this.world.query(probe).some((c) =>
+                c.kind === 'rect'
+                && c.flags.solid
+                && !c.flags.oneWay
+                && c.id !== ground.id
+            );
+        };
+
+        const leftBlocked = hasWallAtEdge(leftEdge, -1);
+        const rightBlocked = hasWallAtEdge(rightEdge, 1);
+
+        let dropDir: -1 | 1;
+        if (this.targetX !== null && Math.abs(this.targetX - botCx) > 24) {
+            dropDir = this.targetX > botCx ? 1 : -1;
+        } else if (this.moveCommitDir !== 0) {
+            dropDir = this.moveCommitDir;
+        } else {
+            const leftDist = Math.abs(botCx - leftEdge);
+            const rightDist = Math.abs(rightEdge - botCx);
+            dropDir = rightDist <= leftDist ? 1 : -1;
+        }
+
+        if (dropDir > 0 && rightBlocked && !leftBlocked) dropDir = -1;
+        else if (dropDir < 0 && leftBlocked && !rightBlocked) dropDir = 1;
+        else if (leftBlocked && rightBlocked) {
+            const leftDist = Math.abs(botCx - leftEdge);
+            const rightDist = Math.abs(rightEdge - botCx);
+            dropDir = rightDist <= leftDist ? 1 : -1;
+        }
+
+        const rawEdgeX = dropDir > 0 ? rightEdge : leftEdge;
+        const rawTargetX = rawEdgeX + dropDir * ISLAND_EDGE_ESCAPE_X_PAD;
+        const targetX = Math.max(20, Math.min(window.innerWidth - 20, rawTargetX));
+        const targetY = Math.max(30, Math.min(window.innerHeight - 30, ground.aabb.y1 + ISLAND_EDGE_ESCAPE_DROP_Y));
+
+        this.clearTargetLock();
+        this.targetPlatform = null;
+        this.targetX = targetX;
+        this.autoTargetY = targetY;
+        this.resetManeuverTracking();
+        this.currentState = 'seek';
+        this.navState = 'nav-ready';
+        this.bestProgressDist = Infinity;
+        this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
+        this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
+        this.approachPhase = 'direct';
+        this.approachX = null;
+        this.moveCommitDir = dropDir;
+        this.moveCommitTimer = Math.max(this.moveCommitTimer, ISLAND_EDGE_ESCAPE_COMMIT);
+        this.dropEdgeX = rawEdgeX;
+        this.dropGroundId = ground.id;
+        this.dropLockTimer = Math.max(this.dropLockTimer, 2.4);
+        this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, ISLAND_EDGE_ESCAPE_FREEZE);
+        this.boostRecoveryPressure(reason, 0.2);
+
+        this.recordLog(
+            'LOOP_FALLBACK',
+            pose,
+            `sig=${signature} ${reason}: island-edge ID${ground.id} dir=${dropDir > 0 ? 'R' : 'L'} edge=${Math.round(rawEdgeX)} target=(${Math.round(targetX)},${Math.round(targetY)})`
+        );
+        window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
+            detail: {
+                type: 'loop_fallback',
+                reason,
+                mode: 'island-edge',
+                targetX,
+                targetY,
+                groundId: ground.id
+            }
+        }));
+        return true;
+    }
+
     private triggerLoopHardFallback(pose: Pose, signature: string, reason: string) {
         if (this.manualMode) {
             this.recordLog('MANUAL_GIVE_UP', pose, `loop detected: ${reason}`);
@@ -3937,42 +4643,24 @@ export class Brain {
 
         const botCx = pose.x + pose.width / 2;
         const botFeetY = pose.y + pose.height;
-
-        // Detour Planner Hook (Loop Recovery)
-        const locked = this.getLockedTarget();
-        const detour = this.detourPlanner.getDetour(pose, locked, this.targetPlatform, this.getPlannerContext(pose), [reason]);
-        if (detour) {
-            this.recordLog('DETOUR_PLAN', pose, `${reason}: ${detour.type} ${detour.reason} (loop-fallback)`);
-            this.isDetourActive = true;
-
-            if (detour.type === 'maneuver' && detour.edge) {
-                this.executeLocalManeuver(pose, detour.edge);
-                return;
-            } else if (detour.type === 'waypoint' && detour.target && 'id' in detour.target) {
-                if (locked) {
-                    this.setSubTargetWaypoint(pose, detour.target as Collider, locked, reason, 'detour-loop');
-                } else {
-                    this.setStationaryPlatformTarget(detour.target as Collider, pose.x + pose.width / 2, true);
-                    this.currentState = 'seek';
-                    this.navState = 'nav-align';
-                    // We successfully found a detour, so we can treat this as "progress" but
-                    // we retain some pressure counters if needed. For loop recovery, resetting local stagnation is fine.
-                    this.bestProgressDist = Infinity;
-                    this.progressStagnationTimer = 0;
-                    this.fsmStagnationTimer = 0;
-                }
-                return;
-            }
+        const startId = pose.grounded ? pose.groundedId : null;
+        const isIslandReason = this.islandModeActive || reason.includes('island') || reason.includes('no-exit');
+        this.boostRecoveryPressure(reason);
+        if (isIslandReason) {
+            this.enterIslandMode(pose, reason);
         }
 
-        const primeFallbackTarget = (pick: Collider, mode: 'local-random' | 'global-nearest' | 'local-reachable' | 'local-reachable-biased' | 'mainland-anchor' | 'island-nearest') => {
+        const primeFallbackTarget = (
+            pick: Collider,
+            mode: 'local-reachable-biased' | 'mainland-anchor' | 'directed-mainland'
+        ) => {
             this.lockedTargetId = pick.id;
             this.setStationaryPlatformTarget(pick, botCx, true);
             this.resetManeuverTracking();
             this.currentState = 'seek';
             this.bestProgressDist = Infinity;
-            this.progressStagnationTimer = 0;
-            this.fsmStagnationTimer = 0;
+            this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
+            this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
             this.approachPhase = 'direct';
             this.approachX = null;
             this.moveCommitDir = 0;
@@ -3980,9 +4668,8 @@ export class Brain {
             this.dropEdgeX = null;
             this.dropGroundId = null;
             this.dropLockTimer = 0;
-            this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, 0.3);
-            this.recentWarpDestinations.push(pick.id);
-            if (this.recentWarpDestinations.length > 5) this.recentWarpDestinations.shift();
+            this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, 0.5);
+            this.rememberWarpDestination(pick.id);
             this.recordLog('LOOP_FALLBACK', pose, `sig=${signature} ${reason}: ${mode} ID${pick.id}`);
             window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
                 detail: {
@@ -3994,83 +4681,60 @@ export class Brain {
             }));
         };
 
-        if (reason.includes('island')) {
-            // Strategy 1: Pick the nearest visible platform, ignoring graph reachability.
-            // The graph is what says we're stuck, so bypassing it is the right move.
-            // CRITICAL: Use coordinate targeting (not platform targeting) so the bot
-            // enters the nav-ready-coord path and steers directly instead of re-entering
-            // the graph nav pipeline (which would immediately fail again).
-            const islandEscapePool = this.world.getAll().filter(c => {
-                if (c.kind !== 'rect' || !c.flags.solid) return false;
-                if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
-                if (pose.grounded && pose.groundedId === c.id) return false;
-                if (this.recentWarpDestinations.includes(c.id)) return false;
-                return true;
-            });
-            if (islandEscapePool.length > 0) {
-                // Sort by distance, pick from the nearest few
-                islandEscapePool.sort((a, b) => {
-                    const aCx = (a.aabb.x1 + a.aabb.x2) / 2;
-                    const bCx = (b.aabb.x1 + b.aabb.x2) / 2;
-                    const distA = Math.hypot(aCx - botCx, a.aabb.y1 - botFeetY);
-                    const distB = Math.hypot(bCx - botCx, b.aabb.y1 - botFeetY);
-                    return distA - distB;
-                });
-                const topCount = Math.min(3, islandEscapePool.length);
-                const pick = islandEscapePool[Math.floor(Math.random() * topCount)];
+        const strictlyFilteredGlobal = this.world.getAll().filter((c) => {
+            if (c.kind !== 'rect' || !c.flags.solid) return false;
+            if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
+            if (this.targetPlatform && c.id === this.targetPlatform.id) return false;
+            if (pose.grounded && pose.groundedId === c.id) return false;
+            if (this.recentWarpDestinations.includes(c.id)) return false;
+            if (startId !== null && this.isRegionTargetBlacklisted(startId, c.id)) return false;
+            return true;
+        });
 
-                // Use coordinate targeting to bypass graph nav entirely.
-                // Setting targetPlatform = null ensures we hit the nav-ready-coord path
-                // which just steers directly toward the target coordinates.
-                const pickCx = (pick.aabb.x1 + pick.aabb.x2) / 2;
-                this.clearTargetLock();
-                this.targetPlatform = null;
-                this.targetX = pickCx;
-                this.autoTargetY = pick.aabb.y1;
-                this.resetManeuverTracking();
-                this.currentState = 'seek';
-                this.navState = 'nav-ready';
-                this.bestProgressDist = Infinity;
-                this.progressStagnationTimer = 0;
-                this.fsmStagnationTimer = 0;
-                this.approachPhase = 'direct';
-                this.approachX = null;
-                this.moveCommitDir = 0;
-                this.moveCommitTimer = 0;
-                this.dropEdgeX = null;
-                this.dropGroundId = null;
-                this.dropLockTimer = 0;
-                this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, 4.0);
-                this.recentWarpDestinations.push(pick.id);
-                if (this.recentWarpDestinations.length > 5) this.recentWarpDestinations.shift();
-                this.recordLog('LOOP_FALLBACK', pose, `sig=${signature} ${reason}: island-coord ID${pick.id} (${Math.round(pickCx)},${Math.round(pick.aabb.y1)})`);
-                window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
-                    detail: {
-                        type: 'loop_fallback',
-                        reason,
-                        mode: 'island-coord',
-                        targetId: pick.id,
-                        targetX: pickCx,
-                        targetY: pick.aabb.y1
-                    }
-                }));
+        if (this.islandModeActive) {
+            if (this.tryStartIslandEdgeEscape(pose, signature, reason)) return;
+
+            const mainland = this.findReachableMainlandCandidate(pose, botCx, botFeetY);
+            if (mainland) {
+                primeFallbackTarget(mainland, 'mainland-anchor');
                 return;
             }
 
-            // Strategy 2: Coordinate target as last resort
-            if (this.tryPickCoordinateTarget(pose, this.world.getAll(), true, true)) {
-                this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, 4.0);
-                this.recordLog('LOOP_FALLBACK', pose, `sig=${signature} ${reason}: island-panic forced non-local coord`);
-                window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
-                    detail: {
-                        type: 'loop_fallback',
-                        reason,
-                        mode: 'coordinate',
-                        targetX: this.targetX,
-                        targetY: this.autoTargetY
-                    }
-                }));
+            const directedBase = this.findDirectedEscapeBase(pose, botCx, botFeetY);
+            if (directedBase) {
+                this.activateCoordinateEscapeFromCollider(pose, directedBase, signature, reason, 'directed-coord');
                 return;
+            }
+
+            if (strictlyFilteredGlobal.length > 0 && this.tryPickCoordinateTarget(pose, strictlyFilteredGlobal, true, true)) {
+                this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, ISLAND_MODE_FREEZE_SEC);
+                this.recordLog('LOOP_FALLBACK', pose, `sig=${signature} ${reason}: island-panic non-local coord`);
+                return;
+            }
+        } else {
+            // Detour Planner Hook (Loop Recovery)
+            const locked = this.getLockedTarget();
+            const detour = this.detourPlanner.getDetour(pose, locked, this.targetPlatform, this.getPlannerContext(pose), [reason]);
+            if (detour) {
+                this.recordLog('DETOUR_PLAN', pose, `${reason}: ${detour.type} ${detour.reason} (loop-fallback)`);
+                this.isDetourActive = true;
+
+                if (detour.type === 'maneuver' && detour.edge) {
+                    this.executeLocalManeuver(pose, detour.edge);
+                    return;
+                } else if (detour.type === 'waypoint' && detour.target && 'id' in detour.target) {
+                    if (locked) {
+                        this.setSubTargetWaypoint(pose, detour.target as Collider, locked, reason, 'detour-loop');
+                    } else {
+                        this.setStationaryPlatformTarget(detour.target as Collider, pose.x + pose.width / 2, true);
+                        this.currentState = 'seek';
+                        this.navState = 'nav-align';
+                        this.bestProgressDist = Infinity;
+                        this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
+                        this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
+                    }
+                    return;
+                }
             }
         }
 
@@ -4086,112 +4750,69 @@ export class Brain {
             if (this.targetPlatform && c.id === this.targetPlatform.id) return false;
             if (pose.grounded && pose.groundedId === c.id) return false;
             if (this.recentWarpDestinations.includes(c.id)) return false;
+            if (startId !== null && this.isRegionTargetBlacklisted(startId, c.id)) return false;
             return true;
         });
 
-        // Strict pool empty? Try Mainland (Graph-connected, Far)
         if (pool.length === 0) {
-            const global = this.world.getAll();
-            const candidates = global.filter(c => {
+            pool = this.world.query(searchAABB).filter((c) => {
                 if (c.kind !== 'rect' || !c.flags.solid) return false;
                 if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
                 if (this.targetPlatform && c.id === this.targetPlatform.id) return false;
                 if (pose.grounded && pose.groundedId === c.id) return false;
-                if (this.recentWarpDestinations.includes(c.id)) return false;
-
-                // Connectivity check: must have outgoing edges (not a dead end)
-                if (!this.graph.nodes.has(c.id)) return false;
-                const node = this.graph.nodes.get(c.id);
-                return node && node.edges.some(e => e.invalidUntil <= performance.now());
+                if (startId !== null && this.isRegionTargetBlacklisted(startId, c.id)) return false;
+                return true;
             });
-
-            if (candidates.length > 0) {
-                candidates.sort((a, b) => {
-                    const distA = Math.hypot(((a.aabb.x1 + a.aabb.x2) / 2) - botCx, a.aabb.y1 - botFeetY);
-                    const distB = Math.hypot(((b.aabb.x1 + b.aabb.x2) / 2) - botCx, b.aabb.y1 - botFeetY);
-                    return distB - distA;
-                });
-                const topCount = Math.min(3, candidates.length);
-                const pick = candidates[Math.floor(Math.random() * topCount)];
-                primeFallbackTarget(pick, 'mainland-anchor');
-                return;
-            }
-
-            // Mainland Empty? Force Nuclear Option (bypass cooldown)
-            if (this.tryPickCoordinateTarget(pose, this.world.getAll(), true, true)) {
-                this.recordLog('LOOP_FALLBACK', pose, `sig=${signature} ${reason}: forced non-local coord (mainland empty)`);
-                window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
-                    detail: {
-                        type: 'loop_fallback',
-                        reason,
-                        mode: 'coordinate',
-                        targetX: this.targetX,
-                        targetY: this.autoTargetY
-                    }
-                }));
-                return;
-            }
         }
 
         const idleTime = LOOP_FALLBACK_IDLE_MIN + Math.random() * (LOOP_FALLBACK_IDLE_MAX - LOOP_FALLBACK_IDLE_MIN);
-        if (pool.length > 0 && pose.grounded && pose.groundedId !== null) {
-            const startId = pose.groundedId;
-            const reachablePool = pool.filter((c) =>
-                this.findPathWithContext(startId, c.id, pose, true) !== null
-            );
+        if (pool.length > 0 && pose.grounded && startId !== null && this.graph.nodes.has(startId)) {
+            const reachablePool: { collider: Collider; pathCost: number; score: number }[] = [];
+            for (const c of pool) {
+                const path = this.findPathWithContext(startId, c.id, pose, true, 220);
+                if (!path) continue;
+                const dist = Math.hypot(((c.aabb.x1 + c.aabb.x2) / 2) - botCx, c.aabb.y1 - botFeetY);
+                const corridorPenalty = this.getCorridorFailurePenalty(startId, c.id);
+                const node = this.graph.nodes.get(c.id);
+                const exitBonus = node
+                    ? Math.min(80, node.edges.reduce((count, edge) => count + (edge.invalidUntil <= performance.now() ? 1 : 0), 0) * 12)
+                    : 0;
+                const score = exitBonus + Math.min(90, dist * 0.16) - path.totalCost * 0.4 - corridorPenalty;
+                reachablePool.push({ collider: c, pathCost: path.totalCost, score });
+            }
             if (reachablePool.length > 0) {
-                // Select with bias toward escaping local region (furthest)
-                reachablePool.sort((a, b) => {
-                    const distA = Math.hypot(((a.aabb.x1 + a.aabb.x2) / 2) - botCx, a.aabb.y1 - botFeetY);
-                    const distB = Math.hypot(((b.aabb.x1 + b.aabb.x2) / 2) - botCx, b.aabb.y1 - botFeetY);
-                    return distB - distA; // Descending
-                });
-                const topCount = Math.min(3, reachablePool.length);
-                const pick = reachablePool[Math.floor(Math.random() * topCount)];
-                primeFallbackTarget(pick, 'local-reachable-biased');
+                reachablePool.sort((a, b) => b.score - a.score);
+                primeFallbackTarget(reachablePool[0].collider, 'local-reachable-biased');
                 return;
             }
-        } else if (pool.length > 0 && !pose.grounded) {
-            const pick = pool[Math.floor(Math.random() * pool.length)];
-            primeFallbackTarget(pick, 'local-random');
+        }
+
+        const mainland = this.findReachableMainlandCandidate(pose, botCx, botFeetY);
+        if (mainland) {
+            primeFallbackTarget(mainland, 'mainland-anchor');
             return;
         }
 
-        // If reachable set is empty, escalate to non-local escape strategy
-        if (this.tryPickCoordinateTarget(pose, this.world.getAll(), true, true)) {
-            this.recordLog('LOOP_FALLBACK', pose, `sig=${signature} ${reason}: escalated to non-local coord`);
-            window.dispatchEvent(new CustomEvent('parkour-bot:diagnostic', {
-                detail: {
-                    type: 'loop_fallback',
-                    reason,
-                    mode: 'coordinate',
-                    targetX: this.targetX,
-                    targetY: this.autoTargetY
-                }
-            }));
+        const directedBase = this.findDirectedEscapeBase(pose, botCx, botFeetY);
+        if (directedBase) {
+            this.activateCoordinateEscapeFromCollider(pose, directedBase, signature, reason, 'directed-coord');
             return;
         }
 
-        const globalPool = this.world.getAll().filter((c) => {
+        if (strictlyFilteredGlobal.length > 0 && this.tryPickCoordinateTarget(pose, strictlyFilteredGlobal, true, true)) {
+            this.recordLog('LOOP_FALLBACK', pose, `sig=${signature} ${reason}: escalated non-local coord`);
+            return;
+        }
+
+        const relaxedGlobal = this.world.getAll().filter((c) => {
             if (c.kind !== 'rect' || !c.flags.solid) return false;
             if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
-            if (this.targetPlatform && c.id === this.targetPlatform.id) return false;
             if (pose.grounded && pose.groundedId === c.id) return false;
-            if (this.recentWarpDestinations.includes(c.id)) return false;
             return true;
         });
-        if (globalPool.length > 0) {
-            let nearest = globalPool[0];
-            let bestDist = Infinity;
-            for (const c of globalPool) {
-                const cx = (c.aabb.x1 + c.aabb.x2) / 2;
-                const dist = Math.hypot(cx - botCx, c.aabb.y1 - botFeetY);
-                if (dist < bestDist) {
-                    bestDist = dist;
-                    nearest = c;
-                }
-            }
-            primeFallbackTarget(nearest, 'global-nearest');
+        if (strictlyFilteredGlobal.length === 0 && relaxedGlobal.length > 0 && this.tryPickCoordinateTarget(pose, relaxedGlobal, true, true)) {
+            this.recordLog('RELAX_RECENCY', pose, 'loop fallback relaxed recent warp exclusions');
+            this.recordLog('LOOP_FALLBACK', pose, `sig=${signature} ${reason}: relaxed non-local coord`);
             return;
         }
 
@@ -4310,6 +4931,22 @@ export class Brain {
             score -= (costExcess * 0.25);
         }
 
+        // Penalize isolated/dead-end nodes to avoid selecting platforms that immediately trap reroutes.
+        const node = this.graph.nodes.get(c.id);
+        if (!node) {
+            score -= 22;
+        } else {
+            const viableExits = node.edges.reduce((count, e) => count + (e.invalidUntil <= now ? 1 : 0), 0);
+            if (viableExits === 0) score -= 28;
+            else if (viableExits === 1) score -= 10;
+            else score += Math.min(8, (viableExits - 1) * 2);
+        }
+
+        // Avoid no-op picks that are almost on top of the bot and offer little progress.
+        if (dist < 55 && Math.abs(dy) < 24) {
+            score -= 24;
+        }
+
         // Penalize highly vertical surfaces as primary targets (prevents wall-center lock).
         const verticalRatio = platH / Math.max(platW, 1);
         if (verticalRatio > 2.5) score -= 45;
@@ -4336,11 +4973,22 @@ export class Brain {
         for (const id of recent) blocked.add(id);
 
         if (currentGroundedId !== null) {
+            this.pruneRegionBlacklist();
             const unreachable = this.recentUnreachable.get(currentGroundedId);
             if (unreachable) {
                 const now = performance.now();
                 for (const entry of unreachable) {
-                    if (now - entry.time < 5000) {
+                    if (now - entry.time < REGION_BLACKLIST_TTL_MS) {
+                        blocked.add(entry.targetId);
+                    }
+                }
+            }
+
+            const regionEntries = this.regionBlacklist.get(currentGroundedId);
+            if (regionEntries) {
+                const now = performance.now();
+                for (const entry of regionEntries.values()) {
+                    if (entry.targetId !== null && entry.expiresAt > now) {
                         blocked.add(entry.targetId);
                     }
                 }
@@ -4357,8 +5005,16 @@ export class Brain {
         const botFeetY = pose.y + pose.height;
         const minDist = preferFar ? FAR_TARGET_MIN_DIST : 280;
 
-        const ranked = candidates
-            .filter(c => c.kind === 'rect' && c.flags.solid && (c.aabb.x2 - c.aabb.x1) >= MIN_PLATFORM_SIZE)
+        const strictRanked = candidates
+            .filter(c => {
+                if (c.kind !== 'rect' || !c.flags.solid) return false;
+                if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
+                if (pose.groundedId !== null && c.id === pose.groundedId) return false;
+                if (this.targetPlatform && c.id === this.targetPlatform.id) return false;
+                if (this.recentWarpDestinations.includes(c.id)) return false;
+                if (pose.groundedId !== null && this.isRegionTargetBlacklisted(pose.groundedId, c.id)) return false;
+                return true;
+            })
             .map(c => {
                 const cx = (c.aabb.x1 + c.aabb.x2) / 2;
                 const cy = c.aabb.y1;
@@ -4366,6 +5022,28 @@ export class Brain {
                 return { collider: c, dist };
             })
             .sort((a, b) => b.dist - a.dist);
+
+        let ranked = strictRanked;
+        if (ranked.length === 0) {
+            ranked = candidates
+                .filter(c => {
+                    if (c.kind !== 'rect' || !c.flags.solid) return false;
+                    if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
+                    if (pose.groundedId !== null && c.id === pose.groundedId) return false;
+                    if (this.targetPlatform && c.id === this.targetPlatform.id) return false;
+                    return true;
+                })
+                .map(c => {
+                    const cx = (c.aabb.x1 + c.aabb.x2) / 2;
+                    const cy = c.aabb.y1;
+                    const dist = Math.hypot(cx - botCx, cy - botFeetY);
+                    return { collider: c, dist };
+                })
+                .sort((a, b) => b.dist - a.dist);
+            if (ranked.length > 0) {
+                this.recordLog('RELAX_RECENCY', pose, 'coordinate fallback relaxed recent warp exclusions');
+            }
+        }
 
         if (ranked.length === 0) return false;
         const farPool = ranked.filter(r => r.dist >= minDist);
@@ -4402,9 +5080,8 @@ export class Brain {
             this.autoTargetY = y;
             this.currentState = 'seek';
             this.bestProgressDist = Infinity;
-            this.progressStagnationTimer = 0;
-            this.fsmStagnationTimer = 0;
-            this.retryCount = 0;
+            this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
+            this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
             this.approachPhase = 'direct';
             this.approachX = null;
             this.seekDiagTimer = 0;
@@ -4423,10 +5100,12 @@ export class Brain {
             this.takeoffZone = null;
             this.patienceTimer = 0;
             this.breadcrumbStack = [];
+            this.rememberWarpDestination(base.id);
+            this.boostRecoveryPressure('coordinate-escape');
 
             this.lastCoordinateFallbackTime = performance.now();
             // Force commitment to this recovery mode (suppress retargeting)
-            this.targetSelectFreezeTimer = 2.0;
+            this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, this.islandModeActive ? ISLAND_MODE_FREEZE_SEC : 2.0);
 
             this.resetManeuverTracking();
             this.resetShaftClimbState();
@@ -4631,6 +5310,7 @@ export class Brain {
             this.invalidateActiveManeuver(pose, 'ping-pong', 8000);
             if (!this.activeManeuver && pose.groundedId !== null && this.targetPlatform) {
                 this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, 'ping-pong', 8000);
+                this.recordRegionFailure(pose, pose.groundedId, this.targetPlatform.id, 'GLITCH_LOOP', { ttlMs: 9000 });
             }
             this.loopCooldown = LOOP_RECOVERY_COOLDOWN;
             this.stallTimer = 0;
@@ -4648,6 +5328,9 @@ export class Brain {
 
     private pickNewTarget(pose: Pose) {
         this.isDetourActive = false;
+        this.pruneRegionBlacklist();
+        this.pruneCorridorFailureMemory();
+        this.pruneRegionFailureSignatures();
         const hasCommittedTarget =
             this.lockedTargetId !== null
             || this.targetPlatform !== null
@@ -4664,13 +5347,41 @@ export class Brain {
             return;
         }
 
+        if (this.islandModeActive) {
+            if (pose.grounded && pose.groundedId !== null) {
+                this.triggerLoopHardFallback(pose, `island-latch-ID${pose.groundedId}`, 'island-latch');
+                return;
+            }
+            const strictPool = this.world.getAll().filter((c) => {
+                if (c.kind !== 'rect' || !c.flags.solid) return false;
+                if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
+                if (this.recentWarpDestinations.includes(c.id)) return false;
+                return true;
+            });
+            if (this.tryPickCoordinateTarget(pose, strictPool, true, true)) {
+                return;
+            }
+        }
+
         const viewAABB: AABB = { x1: pose.x - VIEW_DIST, y1: 0, x2: pose.x + VIEW_DIST, y2: window.innerHeight };
         const candidates = this.world.query(viewAABB);
+        const botAABB: AABB = {
+            x1: pose.x,
+            y1: pose.y,
+            x2: pose.x + pose.width,
+            y2: pose.y + pose.height
+        };
+        const overlapsBotBody = (c: Collider): boolean => {
+            const overlapX = Math.min(botAABB.x2, c.aabb.x2) - Math.max(botAABB.x1, c.aabb.x1);
+            const overlapY = Math.min(botAABB.y2, c.aabb.y2) - Math.max(botAABB.y1, c.aabb.y1);
+            return overlapX > 5 && overlapY > 5;
+        };
 
         // Filter to valid platforms (wide enough, not currently standing on)
         const valid = candidates.filter(c => {
             const w = c.aabb.x2 - c.aabb.x1;
             if (w < MIN_PLATFORM_SIZE) return false;
+            if (overlapsBotBody(c)) return false;
             // Don't target the platform we're standing on
             if (pose.grounded && (pose.groundedId === c.id || (pose.x + pose.width > c.aabb.x1 - 10 && pose.x < c.aabb.x2 + 10 && Math.abs(pose.y + pose.height - c.aabb.y1) < 20))) {
                 return false;
@@ -4701,15 +5412,53 @@ export class Brain {
             return true;
         });
 
-        const pool = valid.length > 0
+        const validRelaxed = candidates.filter(c => {
+            const w = c.aabb.x2 - c.aabb.x1;
+            if (w < MIN_PLATFORM_SIZE) return false;
+            if (pose.grounded && (pose.groundedId === c.id || (pose.x + pose.width > c.aabb.x1 - 10 && pose.x < c.aabb.x2 + 10 && Math.abs(pose.y + pose.height - c.aabb.y1) < 20))) {
+                return false;
+            }
+
+            const cx = (c.aabb.x1 + c.aabb.x2) / 2;
+            const headroomProbe: AABB = {
+                x1: cx - 10,
+                y1: c.aabb.y1 - 42,
+                x2: cx + 10,
+                y2: c.aabb.y1 - 2
+            };
+            const blockers = this.world.query(headroomProbe);
+            for (const b of blockers) {
+                if (b.id === c.id) continue;
+                if (b.kind === 'rect' && b.flags.solid && !b.flags.oneWay) {
+                    return false;
+                }
+            }
+
+            const burialProbe = { x1: c.aabb.x1 + 2, y1: c.aabb.y1 + 2, x2: c.aabb.x2 - 2, y2: c.aabb.y2 - 2 };
+            if (this.world.query(burialProbe).some(b => b.id !== c.id && b.kind === 'rect' && b.flags.solid && !b.flags.oneWay && b.aabb.x1 <= c.aabb.x1 && b.aabb.x2 >= c.aabb.x2 && b.aabb.y1 <= c.aabb.y1 && b.aabb.y2 >= c.aabb.y2)) {
+                return false;
+            }
+            return true;
+        });
+
+        let pool = valid.length > 0
             ? valid
             : candidates.filter(c => {
                 const w = c.aabb.x2 - c.aabb.x1;
                 if (w < MIN_PLATFORM_SIZE) return false;
+                if (overlapsBotBody(c)) return false;
                 if (pose.grounded && pose.groundedId === c.id) return false;
                 return true;
             });
+        if (pool.length === 0 && validRelaxed.length > 0) {
+            pool = validRelaxed;
+            this.recordLog('RELAX_OVERLAP', pose, `fallback keep=${validRelaxed.length}/${candidates.length}`);
+        }
         if (pool.length === 0) {
+            if (this.tryPickCoordinateTarget(pose, this.world.getAll(), true, true)) {
+                this.recordLog('NO_TARGETS', pose, `view=${candidates.length} valid=0 -> forced coordinate`);
+                return;
+            }
             this.recordLog('NO_TARGETS', pose, `view=${candidates.length} valid=${valid.length}`);
             return;
         }
@@ -4717,9 +5466,26 @@ export class Brain {
         if (this.isFirstTarget) {
             const botCx = pose.x + pose.width / 2;
             const botFeetY = pose.y + pose.height;
-            let closest = pool[0];
+            let firstPool = pool;
+            const startId = this.getPlanningStartId(pose);
+            if (startId !== null && this.graph.nodes.has(startId)) {
+                const reachableInitial = pool.filter((c) => {
+                    if (c.id === startId) return false;
+                    if (this.isRegionTargetBlacklisted(startId, c.id)) return false;
+                    return this.findPathWithContext(startId, c.id, pose, true, 180) !== null;
+                });
+                if (reachableInitial.length === 0) {
+                    this.recordLog('ISLAND_CONDITION', pose, `ID${startId} initial selection has no reachable exits`);
+                    this.enterIslandMode(pose, `initial-id${startId}`);
+                    this.triggerLoopHardFallback(pose, `island-initial-ID${startId}`, 'island-trap');
+                    return;
+                }
+                firstPool = reachableInitial;
+            }
+
+            let closest = firstPool[0];
             let minDist = Infinity;
-            for (const c of pool) {
+            for (const c of firstPool) {
                 const cx = (c.aabb.x1 + c.aabb.x2) / 2;
                 const cy = c.aabb.y1;
                 const dist = Math.hypot(cx - botCx, cy - botFeetY);
@@ -4778,28 +5544,16 @@ export class Brain {
             const allEdges = node ? node.edges : [];
             const validEdges = allEdges.filter(e => e.invalidUntil <= now);
             if (validEdges.length === 0) {
-                if (allEdges.length > 0) {
-                    // Edges exist but ALL are temporarily invalidated.
-                    // Instead of force-clearing ALL (which causes immediate re-failure for
-                    // physically impossible edges), only clear the OLDEST invalidation
-                    // to give one edge a second chance while preserving the rest.
-                    const oldest = allEdges.reduce((best, e) =>
-                        e.invalidUntil < best.invalidUntil ? e : best, allEdges[0]);
-                    oldest.invalidUntil = 0;
-                    oldest.failureReason = null;
-                    this.recordLog('ISLAND_EDGE_CLEAR', pose, `cleared oldest edge ${oldest.maneuverId} from ID${startId} (${allEdges.length} total)`);
-                    // Fall through to normal scoring with one fresh edge
-                } else {
-                    // Truly no edges — this node has no discovered maneuvers at all.
-                    // This is a real island (isolated platform).
-                    this.recordLog('ISLAND_PANIC', pose, `ID${startId} has no edges at all`);
-                    this.triggerLoopHardFallback(pose, `island-panic-ID${startId}`, 'island-panic');
-                    return;
-                }
+                const edgeReason = allEdges.length > 0 ? 'all exits cooling down' : 'no discovered exits';
+                this.recordLog('ISLAND_PANIC', pose, `ID${startId} ${edgeReason}`);
+                this.enterIslandMode(pose, `island-panic-ID${startId}`);
+                this.triggerLoopHardFallback(pose, `island-panic-ID${startId}`, 'island-panic');
+                return;
             }
 
             const reachableNow: Collider[] = [];
             for (const c of scoringPool) {
+                if (this.isRegionTargetBlacklisted(startId, c.id)) continue;
                 const path = this.findPathWithContext(startId, c.id, pose, false, 160);
                 if (path !== null) {
                     reachableNow.push(c);
@@ -4813,6 +5567,7 @@ export class Brain {
             } else {
                 const reachableRelaxed: Collider[] = [];
                 for (const c of scoringPool) {
+                    if (this.isRegionTargetBlacklisted(startId, c.id)) continue;
                     const path = this.findPathWithContext(startId, c.id, pose, true, 180);
                     if (path !== null) {
                         reachableRelaxed.push(c);
@@ -4825,6 +5580,11 @@ export class Brain {
                     this.strandedTimer = 0;
                 } else {
                     this.recordLog('GRAPH_FAIL', pose, `no maneuver path from ID${startId}`);
+                    if (this.targetPlatform) {
+                        this.recordRegionFailure(pose, startId, this.targetPlatform.id, 'no-feasible-edge', { ttlMs: 9000 });
+                    } else if (this.lockedTargetId !== null) {
+                        this.recordRegionFailure(pose, startId, this.lockedTargetId, 'no-feasible-edge', { ttlMs: 9000 });
+                    }
 
                     // Attempt Local Solve
                     const localEdge = this.localSolver.solve(
@@ -4840,7 +5600,7 @@ export class Brain {
                     }
 
                     this.recordLog('ISLAND_CONDITION', pose, `ID${startId} has no exits (strict or relaxed). Immediate fallback.`);
-
+                    this.enterIslandMode(pose, `island-id${startId}`);
                     this.triggerLoopHardFallback(pose, `island-ID${startId}`, 'island-trap');
                     return; // Abort target selection
                 }
@@ -4902,22 +5662,27 @@ export class Brain {
             }
         }
 
-        // Weighted random selection: top candidates get exponentially more chance
-        // Softmax-style with temperature: P(i) ∝ e^(score_i / T)
-        const T = preferFar ? 22 : 14;
+        // Weighted random selection across top candidates, but prefer deterministic picks
+        // when one option is clearly better to reduce target thrash.
+        const T = preferFar ? 20 : 13;
         const top = weightedPool.slice(0, preferFar ? 12 : 8);
         if (top.length === 0) return;
-        const maxScore = top[0].score;
-        const weights = top.map(s => Math.exp((s.score - maxScore) / T));
-        const totalWeight = weights.reduce((a, b) => a + b, 0);
-
-        let r = Math.random() * totalWeight;
         let picked = top[0];
-        for (let i = 0; i < top.length; i++) {
-            r -= weights[i];
-            if (r <= 0) {
-                picked = top[i];
-                break;
+
+        const secondScore = top.length > 1 ? top[1].score : -Infinity;
+        const dominantGap = top[0].score - secondScore;
+        if (!(top.length > 1 && dominantGap >= TARGET_PICK_DOMINANCE_GAP)) {
+            const maxScore = top[0].score;
+            const weights = top.map(s => Math.exp((s.score - maxScore) / T));
+            const totalWeight = weights.reduce((a, b) => a + b, 0);
+
+            let r = Math.random() * totalWeight;
+            for (let i = 0; i < top.length; i++) {
+                r -= weights[i];
+                if (r <= 0) {
+                    picked = top[i];
+                    break;
+                }
             }
         }
 
@@ -4973,11 +5738,15 @@ export class Brain {
             this.recordLog(
                 'TARGET_SKIP_NEAR',
                 pose,
-                `near ID${nearest.collider.id} d=${Math.round(nearest.dist)} s=${Math.round(nearestScore)} vs pick ID${target.id} s=${Math.round(picked.score)}`
+                `near ID${nearest.collider.id} d=${Math.round(nearest.dist)} s=${Math.round(nearestScore)} vs pick ID${finalTarget.id} s=${Math.round(picked.score)}`
             );
         }
-        this.recordLog('TARGET_DECIDE', pose, `pick ID${target.id} lock=${this.lockedTargetId} from ${scoringPool.length} | ${topSummary}`);
-        this.recordLog('NEW_TARGET', pose, `ID${target.id} score:${Math.round(picked.score)}`);
+        this.recordLog(
+            'TARGET_DECIDE',
+            pose,
+            `pick ID${target.id} final ID${finalTarget.id} lock=${this.lockedTargetId} from ${scoringPool.length} | ${topSummary}`
+        );
+        this.recordLog('NEW_TARGET', pose, `ID${finalTarget.id} score:${Math.round(picked.score)}`);
     }
 
     private attemptBreadcrumbRecovery(pose: Pose, reason: string) {
@@ -5000,8 +5769,8 @@ export class Brain {
                     this.setStationaryPlatformTarget(c, pose.x + pose.width / 2, true);
                     this.currentState = 'seek';
                     this.bestProgressDist = Infinity;
-                    this.progressStagnationTimer = 0;
-                    this.fsmStagnationTimer = 0;
+                    this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
+                    this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
                     this.approachPhase = 'direct';
                     this.approachX = null;
                     this.navState = 'nav-align';
@@ -5024,8 +5793,8 @@ export class Brain {
                     this.setStationaryPlatformTarget(waypoint, pose.x + pose.width / 2, true);
                     this.currentState = 'seek';
                     this.bestProgressDist = Infinity;
-                    this.progressStagnationTimer = 0;
-                    this.fsmStagnationTimer = 0;
+                    this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
+                    this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
                     this.approachPhase = 'direct';
                     this.approachX = null;
                     this.navState = 'nav-align';
@@ -5050,8 +5819,8 @@ export class Brain {
     private setSubTargetWaypoint(pose: Pose, waypoint: Collider, locked: Collider, reason: string, source: string) {
         this.setStationaryPlatformTarget(waypoint, pose.x + pose.width / 2, true);
         this.bestProgressDist = Infinity;
-        this.progressStagnationTimer = 0;
-        this.fsmStagnationTimer = 0;
+        this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
+        this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
         this.approachPhase = 'direct';
         this.approachX = null;
         this.moveCommitDir = 0;
@@ -5114,6 +5883,7 @@ export class Brain {
         let best: { collider: Collider; score: number } | null = null;
         for (const c of nearby) {
             if (!this.graph.nodes.has(c.id)) continue;
+            if (startId !== null && this.isRegionTargetBlacklisted(startId, c.id)) continue;
             const cx = (c.aabb.x1 + c.aabb.x2) / 2;
             const cy = c.aabb.y1;
             const candidateGoalDist = Math.hypot(goalCx - cx, goalY - cy);
@@ -5134,7 +5904,8 @@ export class Brain {
             const travelDist = Math.hypot(cx - botCx, cy - botFeetY);
             const overshootPenalty = cy < goalY - 50 ? 120 : 0;
             const altitudePotential = Math.max(0, botFeetY - cy);
-            const score = toGoal.totalCost + travelDist * 0.55 + candidateGoalDist * 0.3 + overshootPenalty - altitudePotential * 0.18;
+            const corridorPenalty = startId !== null ? this.getCorridorFailurePenalty(startId, c.id) : 0;
+            const score = toGoal.totalCost + travelDist * 0.55 + candidateGoalDist * 0.3 + overshootPenalty + corridorPenalty - altitudePotential * 0.18;
 
             if (!best || score < best.score) {
                 best = { collider: c, score };
@@ -5148,7 +5919,9 @@ export class Brain {
 
     private reroute(pose: Pose, reason: string = 'recovery') {
         if (this.trackLoopIncident(pose, reason)) return;
+        this.boostRecoveryPressure(reason);
         const locked = this.getLockedTarget();
+        const startId = this.getPlanningStartId(pose);
 
         // Detour Planner Hook
         const detour = this.detourPlanner.getDetour(pose, locked, this.targetPlatform, this.getPlannerContext(pose), [reason]);
@@ -5167,14 +5940,12 @@ export class Brain {
                     this.currentState = 'seek';
                     this.navState = 'nav-align';
                     this.bestProgressDist = Infinity;
-                    this.progressStagnationTimer = 0;
-                    this.fsmStagnationTimer = 0;
+                    this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
+                    this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
                 }
                 return;
             }
         }
-
-        const startId = this.getPlanningStartId(pose);
 
         if (locked && startId !== null && this.graph.nodes.has(startId)) {
             const directRoute = this.findPathWithContext(startId, locked.id, pose, false, 220)
@@ -5201,6 +5972,9 @@ export class Brain {
         const searchAABB: AABB = { x1: Math.min(pose.x, tx) - 300, y1: Math.min(ty, pose.y) - 100, x2: Math.max(pose.x, tx) + 300, y2: Math.max(ty, pose.y) + 100 };
         const nearby = this.world.query(searchAABB).filter(c => {
             if (this.targetPlatform && c.id === this.targetPlatform.id && (!locked || c.id !== locked.id)) return false;
+            if (pose.grounded && pose.groundedId === c.id) return false;
+            if (this.recentWarpDestinations.includes(c.id)) return false;
+            if (startId !== null && this.isRegionTargetBlacklisted(startId, c.id)) return false;
             return (c.aabb.x2 - c.aabb.x1) >= MIN_PLATFORM_SIZE && c.aabb.y1 < pose.y + pose.height && c.aabb.y1 > ty - 30;
         });
         const blockedRecent = this.getRecentBlockedTargetIds(pose.groundedId);
@@ -5236,7 +6010,8 @@ export class Brain {
                 }
 
                 // Bias towards reducing distance to lock (costToLock) over just picking nearby nodes.
-                const score = costToLock * 1.5 + distFromBot * 0.5 - altitudePotential * 0.22 + blockedPenalty + switchPenalty;
+                const corridorPenalty = startId !== null ? this.getCorridorFailurePenalty(startId, c.id) : 0;
+                const score = costToLock * 1.5 + distFromBot * 0.5 - altitudePotential * 0.22 + blockedPenalty + switchPenalty + corridorPenalty;
                 if (score < bestScore) {
                     bestScore = score;
                     pick = c;
@@ -5247,8 +6022,8 @@ export class Brain {
         if (pick) {
             this.setStationaryPlatformTarget(pick, pose.x + pose.width / 2, true);
             this.bestProgressDist = Infinity;
-            this.progressStagnationTimer = 0;
-            this.fsmStagnationTimer = 0;
+            this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
+            this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
             this.approachPhase = 'direct';
             this.approachX = null;
             this.moveCommitDir = 0;
@@ -5257,6 +6032,7 @@ export class Brain {
             this.dropGroundId = null;
             this.dropLockTimer = 0;
             this.noteWaypointSwitch(performance.now());
+            this.rememberWarpDestination(pick.id);
             this.syncActiveManeuver(pose);
             const relaxed = reroutePool.length === 0 && blockedRecent.size > 0;
             if (locked && pick.id !== locked.id) {
@@ -5274,21 +6050,18 @@ export class Brain {
                     const directEdge = this.graph.getBestEdge(startId, locked.id, this.getPlannerContext(pose))
                         ?? this.graph.getBestEdge(startId, locked.id, this.getPlannerContext(pose, true));
                     if (!directEdge) {
-                        this.recordLog('REROUTE_UNLOCK', pose, `${reason}: lock ID${locked.id} unreachable, releasing`);
-                        this.clearTargetLock();
-                        this.targetPlatform = null;
-                        this.targetX = null;
-                        this.autoTargetY = null;
-                        this.currentState = 'idle';
-                        this.resetManeuverTracking();
+                        this.recordLog('REROUTE_UNLOCK', pose, `${reason}: lock ID${locked.id} unreachable, forcing island fallback`);
+                        this.recordRegionFailure(pose, startId, locked.id, 'no-feasible-edge', { ttlMs: 9000 });
+                        this.enterIslandMode(pose, 'lock-unreachable');
+                        this.triggerLoopHardFallback(pose, `island-lock-ID${locked.id}`, 'island-lock-unreachable');
                         return;
                     }
                     this.setActiveManeuver(directEdge, startId, pose);
                 }
                 this.setStationaryPlatformTarget(locked, pose.x + pose.width / 2, true);
                 this.bestProgressDist = Infinity;
-                this.progressStagnationTimer = 0;
-                this.fsmStagnationTimer = 0;
+                this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
+                this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
                 this.noteWaypointSwitch(performance.now());
                 this.recordLog('REROUTE_LOCK', pose, `${reason}: direct lock ID${locked.id}`);
             } else {
@@ -5298,8 +6071,8 @@ export class Brain {
                     this.currentState = 'seek';
                     this.navState = 'nav-ready';
                     this.bestProgressDist = Infinity;
-                    this.progressStagnationTimer = 0;
-                    this.fsmStagnationTimer = 0;
+                    this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
+                    this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
                     this.recordLog('REROUTE_KEEP_COORD', pose, `${reason}: keeping coordinate target (freeze=${this.targetSelectFreezeTimer.toFixed(1)}s)`);
                 } else {
                     this.targetPlatform = null;
@@ -5311,8 +6084,8 @@ export class Brain {
                     this.patienceTimer = 0;
                     this.resetManeuverTracking();
                     this.bestProgressDist = Infinity;
-                    this.progressStagnationTimer = 0;
-                    this.fsmStagnationTimer = 0;
+                    this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
+                    this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
                     this.recordLog('REROUTE_BLIND', pose, `${reason}: no platform lock, reselection`);
                     this.pickNewTarget(pose);
                 }
@@ -5433,6 +6206,7 @@ export class Brain {
      */
     private updateWaypoint(pose: Pose) {
         if (this.lockedTargetId === null) return;
+        if (this.islandModeActive) return;
         if (this.targetSelectFreezeTimer > 0) return;
         const now = performance.now();
         const locked = this.getLockedTarget();
@@ -5441,6 +6215,11 @@ export class Brain {
             return;
         }
         const startId = this.getPlanningStartId(pose);
+        if (startId !== null && this.isRegionTargetBlacklisted(startId, locked.id)) {
+            this.recordLog('PLAN_UNREACHABLE', pose, `ID${startId} -> ID${locked.id} region-blacklisted`);
+            this.triggerLoopHardFallback(pose, `blacklist-ID${startId}->ID${locked.id}`, 'blacklist-hit');
+            return;
+        }
 
         // Keep the current stepping stone briefly to avoid route thrash between near-equivalent paths.
         if (this.targetPlatform
@@ -5509,6 +6288,11 @@ export class Brain {
             const directEdge = this.graph.getBestEdge(startId, locked.id, this.getPlannerContext(pose));
             if (!directEdge) {
                 this.recordLog('PLAN_UNREACHABLE', pose, `ID${startId} -> ID${locked.id} no feasible maneuver`);
+                const hits = this.recordRegionFailure(pose, startId, locked.id, 'no-feasible-edge', { ttlMs: 8500 });
+                if (hits >= REGION_FAILURE_SIGNATURE_ESCALATE) {
+                    this.enterIslandMode(pose, 'path-unreachable-repeat');
+                }
+                this.reroute(pose, 'path-unreachable');
                 return;
             }
             this.setActiveManeuver(directEdge, startId, pose);
@@ -5518,8 +6302,8 @@ export class Brain {
         if (this.targetPlatform?.id !== locked.id) {
             this.setStationaryPlatformTarget(locked, pose.x + pose.width / 2, true);
             this.bestProgressDist = Infinity;
-            this.progressStagnationTimer = 0;
-            this.fsmStagnationTimer = 0;
+            this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
+            this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
             this.noteWaypointSwitch(now);
         }
         this.waypointStickyUntil = 0;

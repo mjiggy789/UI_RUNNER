@@ -9,8 +9,8 @@
     ],
     "scripts": {
         "build": "node build.js",
-        "predev:full": "lsof -ti :4000,4001,4002 | xargs kill -9 || true",
-        "dev:full": "npm run build && concurrently --kill-others \"npx serve -l 4000 release\" \"PORT=4001 npx ts-node services/config-api/src/index.ts\" \"PORT=4002 npx ts-node services/telemetry/src/index.ts\"",
+        "predev:full": "lsof -ti :4000,4001,4010 | xargs kill -9 || true",
+        "dev:full": "npm run build && concurrently --kill-others \"npx serve -l 4000 release\" \"PORT=4001 npx ts-node services/config-api/src/index.ts\" \"PORT=4010 npx ts-node services/telemetry/src/index.ts\"",
         "test:checksum": "npx ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register scripts/test-world-checksum.ts",
         "test:spatial": "npx ts-node --compiler-options '{\"module\":\"commonjs\"}' -r tsconfig-paths/register scripts/test-spatial-grid.ts",
         "test": "npm run test:checksum && npm run test:spatial"

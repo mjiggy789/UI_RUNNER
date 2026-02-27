@@ -235,11 +235,21 @@ export class World {
      * Performs a course-grained line-of-sight check between two points.
      * Returns true if there are no solid obstacles in the path.
      */
-    hasLineOfSight(x1: number, y1: number, x2: number, y2: number): boolean {
+    hasLineOfSight(
+        x1: number,
+        y1: number,
+        x2: number,
+        y2: number,
+        ignoreIds?: Iterable<number>
+    ): boolean {
         const dx = x2 - x1;
         const dy = y2 - y1;
         const dist = Math.hypot(dx, dy);
         if (dist === 0) return true;
+        const ignored =
+            ignoreIds
+                ? (ignoreIds instanceof Set ? ignoreIds : new Set(ignoreIds))
+                : null;
 
         const steps = Math.ceil(dist / 12); // Check every ~12px for high precision
         for (let i = 1; i < steps; i++) {
@@ -257,6 +267,7 @@ export class World {
 
             // If we hit any solid rectangular obstacle (not one-way), LOS is broken
             for (const c of colliding) {
+                if (ignored?.has(c.id)) continue;
                 if (c.kind === 'rect' && c.flags.solid && !c.flags.oneWay) {
                     return false;
                 }

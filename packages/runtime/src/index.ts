@@ -1087,6 +1087,7 @@ class Runtime {
         }
 
         this.world.init();
+        this.respawnBot();
         this.running = true;
         (window as any).ParkourBotInstance = this;
 
@@ -1138,7 +1139,10 @@ class Runtime {
 
     private async sendTelemetry(type: string, payload: any) {
         try {
-            await fetch('http://localhost:4002/event', {
+            const endpoint = typeof (window as any).PARKOUR_BOT_TELEMETRY_URL === 'string'
+                ? (window as any).PARKOUR_BOT_TELEMETRY_URL
+                : 'http://localhost:4010/event';
+            await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1182,6 +1186,38 @@ class Runtime {
 
             if (this.enabled) {
                 const input = this.brain.think(this.controller.pose, dt);
+                // Runtime safety net: prevent coordinate-escape pogo loops where the brain
+                // emits jump-only input and never provides lateral steering.
+                if (
+                    this.brain.currentState === 'seek'
+                    && !this.brain.manualMode
+                    && this.brain.targetPlatform === null
+                    && this.brain.targetX !== null
+                    && this.brain.autoTargetY !== null
+                    && !input.left
+                    && !input.right
+                ) {
+                    const pose = this.controller.pose;
+                    const botCenterX = pose.x + pose.width / 2;
+                    const botFeetY = pose.y + pose.height;
+                    const heightDiff = botFeetY - this.brain.autoTargetY;
+                    if (heightDiff > 20) {
+                        let steerDir: -1 | 1 = this.brain.targetX >= botCenterX ? 1 : -1;
+                        if (Math.abs(this.brain.targetX - botCenterX) < 8) {
+                            steerDir = pose.facing >= 0 ? 1 : -1;
+                        }
+                        if (pose.grounded && pose.groundedId !== null) {
+                            const ground = this.world.colliders.get(pose.groundedId);
+                            if (ground) {
+                                const leftDist = botCenterX - ground.aabb.x1;
+                                const rightDist = ground.aabb.x2 - botCenterX;
+                                steerDir = rightDist < leftDist ? 1 : -1;
+                            }
+                        }
+                        input.left = steerDir < 0;
+                        input.right = steerDir > 0;
+                    }
+                }
                 const lockedTarget = this.brain.lockedTargetId !== null
                     ? this.world.colliders.get(this.brain.lockedTargetId) ?? null
                     : null;

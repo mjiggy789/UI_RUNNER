@@ -76,6 +76,7 @@ export class Controller {
     private jumpBufferTimer: number = 0;
     private jumpBufferGauge: number | null = null;
     private climbStallTimer: number = 0;
+    private climbReentryBlockTimer: number = 0;
     private lastClimbY: number | null = null;
     private crouchLatchTimer: number = 0;
     private slideMoveDir: 1 | -1 = 1;
@@ -131,14 +132,15 @@ export class Controller {
     }
 
     respawn() {
-        this.pose.x = this.spawnX;
-        this.pose.y = this.spawnY;
-        this.pose.vx = 0;
-        this.pose.vy = 0;
         this.pose.width = 20;
         this.pose.height = 40;
-        this.pose.grounded = false;
-        this.pose.groundedId = null;
+        const safe = this.findSafeSpawn();
+        this.pose.x = safe.x;
+        this.pose.y = safe.y;
+        this.pose.vx = 0;
+        this.pose.vy = 0;
+        this.pose.grounded = safe.supportId !== null;
+        this.pose.groundedId = safe.supportId;
         this.pose.jumps = 0;
         this.pose.state = 'idle';
         this.pose.facing = 1;
@@ -150,11 +152,118 @@ export class Controller {
         this.jumpBufferTimer = 0;
         this.jumpBufferGauge = null;
         this.climbStallTimer = 0;
+        this.climbReentryBlockTimer = 0;
         this.lastClimbY = null;
         this.crouchLatchTimer = 0;
         this.slideMoveDir = this.pose.facing;
         this.dashTimer = 0;
         this.dashCooldownTimer = 0;
+    }
+
+    private findSafeSpawn(): { x: number; y: number; supportId: number | null } {
+        const desired = { x: this.spawnX, y: this.spawnY };
+        const width = this.pose.width;
+        const height = this.pose.height;
+        const desiredCenterX = desired.x + width / 2;
+        const desiredFeetY = desired.y + height;
+
+        let best: { x: number; y: number; supportId: number; score: number } | null = null;
+
+        for (const c of this.world.colliders.values()) {
+            if (c.kind !== 'rect' || !c.flags.solid) continue;
+
+            const minX = c.aabb.x1 + 2;
+            const maxX = c.aabb.x2 - width - 2;
+            if (minX > maxX) continue;
+
+            const centerX = (c.aabb.x1 + c.aabb.x2 - width) / 2;
+            const candidateX = Math.max(minX, Math.min(maxX, centerX));
+            const candidateY = c.aabb.y1 - height;
+
+            if (candidateY < 0 || candidateY + height > window.innerHeight) continue;
+            if (!this.isSpawnClear(candidateX, candidateY, c.id)) continue;
+
+            const cx = candidateX + width / 2;
+            const feetY = candidateY + height;
+            let score = Math.hypot(cx - desiredCenterX, feetY - desiredFeetY);
+            score += this.spawnSafetyPenalty(candidateX, candidateY, c.id);
+            if (!best || score < best.score) {
+                best = { x: candidateX, y: candidateY, supportId: c.id, score };
+            }
+        }
+
+        if (best) return { x: best.x, y: best.y, supportId: best.supportId };
+        return { x: desired.x, y: desired.y, supportId: null };
+    }
+
+    private spawnSafetyPenalty(x: number, y: number, supportId: number): number {
+        let penalty = 0;
+
+        const headProbe: AABB = {
+            x1: x + 2,
+            y1: y - 90,
+            x2: x + this.pose.width - 2,
+            y2: y - 2
+        };
+        const blockedAbove = this.world.query(headProbe).some((c) =>
+            c.id !== supportId
+            && c.kind === 'rect'
+            && c.flags.solid
+            && !c.flags.oneWay
+        );
+        if (blockedAbove) penalty += 120;
+
+        const sideY1 = y + 8;
+        const sideY2 = y + this.pose.height - 8;
+        const leftProbe: AABB = { x1: x - 30, y1: sideY1, x2: x - 4, y2: sideY2 };
+        const rightProbe: AABB = { x1: x + this.pose.width + 4, y1: sideY1, x2: x + this.pose.width + 30, y2: sideY2 };
+
+        const leftBlocked = this.world.query(leftProbe).some((c) =>
+            c.id !== supportId
+            && c.kind === 'rect'
+            && c.flags.solid
+            && !c.flags.oneWay
+        );
+        const rightBlocked = this.world.query(rightProbe).some((c) =>
+            c.id !== supportId
+            && c.kind === 'rect'
+            && c.flags.solid
+            && !c.flags.oneWay
+        );
+
+        if (leftBlocked && rightBlocked) penalty += 180;
+        else if (leftBlocked || rightBlocked) penalty += 70;
+
+        return penalty;
+    }
+
+    private isSpawnClear(x: number, y: number, supportId: number): boolean {
+        const body: AABB = {
+            x1: x + 1,
+            y1: y + 1,
+            x2: x + this.pose.width - 1,
+            y2: y + this.pose.height - 1
+        };
+        const bodyBlocked = this.world.query(body).some((c) =>
+            c.id !== supportId
+            && c.kind === 'rect'
+            && c.flags.solid
+            && !c.flags.oneWay
+        );
+        if (bodyBlocked) return false;
+
+        const headroom: AABB = {
+            x1: x + 2,
+            y1: y - 10,
+            x2: x + this.pose.width - 2,
+            y2: y + 2
+        };
+        return !this.world.query(headroom).some((c) =>
+            c.id !== supportId
+            && c.kind === 'rect'
+            && c.flags.solid
+            && !c.flags.oneWay
+        );
     }
 
     update(dt: number, input: ControlInput) {
@@ -185,6 +294,7 @@ export class Controller {
 
     private singleStep(dt: number, input: ControlInput) {
         if (this.dashCooldownTimer > 0) this.dashCooldownTimer -= dt;
+        if (this.climbReentryBlockTimer > 0) this.climbReentryBlockTimer -= dt;
 
         const DASH_SPEED = 450;
         const DASH_DURATION = 0.2;
@@ -304,16 +414,39 @@ export class Controller {
                         this.pose.vx = Math.sign(this.pose.vx) * Math.max(Math.abs(this.pose.vx), SLIDE_ENTRY_BOOST_SPEED);
                     }
 
-                    // Slide is now purely momentum-based (no static crouch walking)
-                    const slideFriction = 650 * dt;
-                    if (Math.abs(this.pose.vx) <= slideFriction) {
-                        this.pose.vx = 0;
-                    } else {
-                        this.pose.vx -= Math.sign(this.pose.vx) * slideFriction;
-                    }
+                    // Allow controlled crouch locomotion so "down" does not dead-stop movement.
+                    // This preserves low-profile traversal while avoiding vx=0 lockups.
+                    const crouchIntentDir = input.left ? -1 : (input.right ? 1 : 0);
+                    if (crouchIntentDir !== 0) {
+                        this.pose.facing = crouchIntentDir as 1 | -1;
+                        this.slideMoveDir = this.pose.facing;
 
-                    if (this.pose.vx !== 0) {
-                        this.pose.facing = Math.sign(this.pose.vx) as 1 | -1;
+                        const preservingMomentum =
+                            this.pose.vx !== 0
+                            && Math.sign(this.pose.vx) === crouchIntentDir
+                            && Math.abs(this.pose.vx) >= CONTINUOUS_SLIDE_MIN_SPEED;
+
+                        if (preservingMomentum) {
+                            // Keep momentum, apply light drag while crouched.
+                            this.pose.vx *= Math.pow(0.985, dt * 60);
+                        } else {
+                            // Start/redirect movement while crouched at reduced speed.
+                            const crouchTargetVx = crouchIntentDir * CROUCH_WALK_SPEED;
+                            const delta = crouchTargetVx - this.pose.vx;
+                            const step = SLIDE_ACCEL * dt;
+                            if (Math.abs(delta) <= step) {
+                                this.pose.vx = crouchTargetVx;
+                            } else {
+                                this.pose.vx += Math.sign(delta) * step;
+                            }
+                        }
+                    } else {
+                        const slideFriction = 650 * dt;
+                        if (Math.abs(this.pose.vx) <= slideFriction) {
+                            this.pose.vx = 0;
+                        } else {
+                            this.pose.vx -= Math.sign(this.pose.vx) * slideFriction;
+                        }
                     }
                 } else {
                     // Standard Run
@@ -451,8 +584,24 @@ export class Controller {
         // If we are climbing, force an exit when input/wall contact is lost or we stall vertically.
         if (this.dashTimer <= 0 && !this.pose.grounded && this.pose.state === 'climb') {
             const touchingFacingWall = this.isTouchingSolidWall(this.pose.facing);
+            const blockedAbove = this.hasSolid({
+                x1: this.pose.x + 2,
+                y1: this.pose.y - 10,
+                x2: this.pose.x + this.pose.width - 2,
+                y2: this.pose.y + 2
+            });
 
-            if (!input.up || !touchingFacingWall) {
+            if (this.pose.ceilingBonk || blockedAbove) {
+                const kickDir = (-this.pose.facing) as 1 | -1;
+                this.pose.vy = JUMP_FORCE * 0.82;
+                this.pose.vx = kickDir * MOVE_SPEED * 1.05;
+                this.pose.facing = kickDir;
+                this.pose.state = 'jump';
+                this.climbStallTimer = 0;
+                this.lastClimbY = null;
+                this.climbReentryBlockTimer = Math.max(this.climbReentryBlockTimer, 0.24);
+                justStallKicked = true;
+            } else if (!input.up || !touchingFacingWall) {
                 this.pose.state = this.pose.vy > 0 ? 'fall' : 'jump';
                 this.climbStallTimer = 0;
                 this.lastClimbY = null;
@@ -478,6 +627,7 @@ export class Controller {
                     this.pose.state = 'jump';
                     this.climbStallTimer = 0;
                     this.lastClimbY = null;
+                    this.climbReentryBlockTimer = Math.max(this.climbReentryBlockTimer, 0.24);
                     justStallKicked = true;
                 }
             }
@@ -487,7 +637,14 @@ export class Controller {
         }
 
         // Wall Slide / Climb entry & active:
-        if (this.dashTimer <= 0 && !this.pose.grounded && this.pose.state !== 'climb' && touchingInputWall && !justStallKicked) {
+        if (
+            this.dashTimer <= 0
+            && !this.pose.grounded
+            && this.pose.state !== 'climb'
+            && touchingInputWall
+            && !justStallKicked
+            && this.climbReentryBlockTimer <= 0
+        ) {
             if (input.up) {
                 this.pose.state = 'climb';
                 this.pose.vy = CLIMB_SPEED;
