@@ -319,10 +319,10 @@ export class NavGraph {
                     const walkMin = to.aabb.x1 + 4;
                     const walkMax = to.aabb.x2 - 4;
                     if (stepLandingX >= walkMin && stepLandingX <= walkMax) {
-                        if (
-                            this.world.hasLineOfSight(tx, takeoffY, stepLandingX, landingY) &&
-                            this.hasTravelClearance(tx, takeoffY, stepLandingX, landingY, from.id, to.id)
-                        ) {
+                        const los = this.world.hasLineOfSight(tx, takeoffLosY, stepLandingX, landingLosY);
+                        const clr = this.hasTravelClearance(tx, takeoffY, stepLandingX, landingY, from.id, to.id);
+                        console.log(`Walk check tx=${tx} -> ${stepLandingX}. LOS=${los} CLR=${clr}`);
+                        if (los && clr) {
                             validTakeoffXs.push(tx);
                             validLandingXs.push(stepLandingX);
                         }
