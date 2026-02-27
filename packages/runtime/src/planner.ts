@@ -298,14 +298,39 @@ export class NavGraph {
         const takeoffMax = Math.min(fromMaxX, edgeAnchor + (facing > 0 ? 8 : 320));
         if (takeoffMin >= takeoffMax) return null;
 
-        const takeoffY = from.aabb.y1 - 6;
-        const landingY = to.aabb.y1 - 6;
+        const takeoffY = from.aabb.y1 - 14;
+        const landingY = to.aabb.y1 - 14;
         const allowWallKickEnvelope = this.isWallish(from) || this.isWallish(to);
         const validTakeoffXs: number[] = [];
         const validLandingXs: number[] = [];
 
+        const dxGap = Math.max(0, Math.max(from.aabb.x1 - to.aabb.x2, to.aabb.x1 - from.aabb.x2));
+        const isWalkable = Math.abs(dy) <= 18 && dxGap <= 42;
+
         for (let tx = takeoffMin; tx <= takeoffMax + 0.001; tx += TAKEOFF_SAMPLE_STEP) {
             if (!this.hasTakeoffHeadroom(tx, from)) continue;
+
+            // 1. Walk/Step Logic (bypass ballistic check)
+            if (isWalkable) {
+                const distToEdge = Math.abs(tx - edgeAnchor);
+                if (distToEdge <= 30) {
+                    const stepLandingX = edgeAnchor + facing * (dxGap + 12);
+                    // Use relaxed bounds for walking/stepping (closer to edge is fine)
+                    const walkMin = to.aabb.x1 + 4;
+                    const walkMax = to.aabb.x2 - 4;
+                    if (stepLandingX >= walkMin && stepLandingX <= walkMax) {
+                        if (
+                            this.world.hasLineOfSight(tx, takeoffY, stepLandingX, landingY) &&
+                            this.hasTravelClearance(tx, takeoffY, stepLandingX, landingY, from.id, to.id)
+                        ) {
+                            validTakeoffXs.push(tx);
+                            validLandingXs.push(stepLandingX);
+                        }
+                    }
+                }
+            }
+
+            // 2. Jump/Ballistic Logic
             const ballisticWindow = this.getBallisticLandingWindow(
                 tx,
                 takeoffY,
@@ -395,7 +420,9 @@ export class NavGraph {
                 }
 
                 // Bail once we are clearly below and falling away from the landing plane.
-                if (vy >= 0 && y > landingY + BALLISTIC_LANDING_DEPTH) break;
+                if (vy >= 0 && y > landingY + BALLISTIC_LANDING_DEPTH) {
+                    break;
+                }
 
                 prevX = x;
                 prevY = y;
@@ -413,7 +440,7 @@ export class NavGraph {
         const probe: AABB = {
             x1: takeoffX - 14,
             x2: takeoffX + 14,
-            y1: from.aabb.y1 - 56,
+            y1: from.aabb.y1 - 44,
             y2: from.aabb.y1 - 2
         };
         const blockers = this.world.query(probe);
