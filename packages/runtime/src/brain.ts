@@ -6,159 +6,7 @@ import { TargetSelector } from './target-selector';
 import type { WorldChecksum } from './world-checksum';
 import { NavGraph, NavEdge, PlannerContext, NavPathResult } from './planner';
 import { Collider, AABB } from '@parkour-bot/shared';
-
-const VIEW_DIST = 1900;
-const MAX_LOG_ENTRIES = 260;
-const MIN_PLATFORM_SIZE = 20;
-const MAX_SINGLE_HOP = 200;  // Max height a double-jump can cover (~200px with physics)
-const MAX_TOTAL_JUMPS = 3;
-const GAUGED_JUMP_MIN = 0.2;
-const GAUGED_JUMP_MAX = 0.7;
-const PLANNER_GRAVITY = 1500;
-const PLANNER_FULL_JUMP_SPEED = 600;
-const GAUGE_TIME_MIN = 0.16;
-const GAUGE_TIME_MAX = 0.66;
-const GAUGE_TIME_STEP = 0.04;
-const RECENT_TARGET_BLOCK_COUNT = 8;
-const FAR_TARGET_MIN_DIST = 700;
-const COORD_TARGET_BASE_PROB = 0.18;
-const COORD_TARGET_REPEAT_BONUS = 0.28;
-const COORD_TARGET_FAR_BONUS = 0.1;
-const ENABLE_COORDINATE_TARGETS = false;
-const SEEK_DIAG_INTERVAL = 1.35;
-const SEEK_TIMEOUT_NEAR_DX = 150;
-const SEEK_TIMEOUT_NEAR_DY = 210;
-const SEEK_TIMEOUT_RETRY_GRACE = 2;
-const SEEK_TIMEOUT_NEAR_EXTEND = 2.8;
-const SEEK_TIMEOUT_PROGRESS_EXTEND = 3.8;
-const SEEK_TIMEOUT_REROUTE_EXTEND = 5.2;
-const SEEK_TIMEOUT_PROGRESS_VX = 85;
-const LOOP_WARN_STALL = 1.0;
-const LOOP_WARN_FLIPS = 6;
-const LOOP_DETECT_STALL = 1.4;
-const LOOP_DETECT_FLIPS = 10;
-const LOOP_RECOVERY_COOLDOWN = 2.5;
-const CEILING_BONK_WINDOW = 1.2;
-const CEILING_BONK_REROUTE_HITS = 3;
-const CEILING_BONK_SUPPRESS_BASE = 0.45;
-const CEILING_BONK_SUPPRESS_STEP = 0.22;
-const CEILING_ARC_PROBE_TIME = 0.62;
-const CEILING_ARC_PROBE_SAMPLES = 10;
-const CEILING_ARC_PROBE_HALF_WIDTH = 9;
-const CEILING_ARC_PROBE_HEIGHT_ABOVE = 20;
-const CEILING_ARC_PROBE_HEIGHT_BELOW = 2;
-const CEILING_ARC_GRAVITY = 1500;
-const CEILING_ARC_JUMP_SPEED = 600;
-const CEILING_ARC_AIR_ACCEL = 800;
-const CEILING_ARC_TARGET_VX = 350;
-const CEILING_ARC_INVALIDATE_COOLDOWN = 0.9;
-const STEER_DEADZONE_BASE = 18;
-const STEER_DEADZONE_NEAR = 30;
-const STEER_DEADZONE_SLIDE = 34;
-const STEER_COMMIT_HOLD_BASE = 0.24;
-const STEER_COMMIT_HOLD_NEAR = 0.32;
-const STEER_COMMIT_STICKY_EXTRA = 14;
-const STEER_COMMIT_FLIP_GUARD = 150;
-const NAV_ZONE_EXIT_MARGIN = 26;
-const NAV_ZONE_SLIP_GRACE = 0.22;
-const WALL_DECISION_COOLDOWN = 0.22;
-const WALL_DECISION_COOLDOWN_FAST = 0.12;
-const WALL_CLIMB_PREFER_HEIGHT = 16;
-const WALL_HOP_RETRY_HEIGHT = 26;
-const WALL_SLIDE_HOP_DOWNWARD_SPEED = 120;
-const WALL_SLIDE_FORCE_HOP_TIME = 0.11;
-const WALL_TARGET_BIAS_DIST = 70;
-const WALL_TARGET_MIN_DX = 120;
-const CEILING_ESCAPE_LATCH = 0.28;
-const WALL_STEP_MAX_WIDTH = 76;
-const WALL_STEP_MIN_HEIGHT = 170;
-const WALL_STEP_MIN_ASPECT = 2.1;
-const WALL_STEP_FACE_OFFSET = 14;
-const WALL_STEP_LAUNCH_DIST = 60;
-const WALL_STEP_LAUNCH_MIN_VX = 120;
-const OVERHEAD_LOCK_MAX_DX = 34;
-const OVERHEAD_LOCK_MIN_HEIGHT = 14;
-const OVERHEAD_LOCK_MAX_HEIGHT = 240;
-const WAYPOINT_STICKY_MS = 2500;
-const TIC_TAC_MIN_HEIGHT = 54;
-const TIC_TAC_SCAN_DIST = 220;
-const TIC_TAC_MIN_OVERLAP_Y = 12;
-const TIC_TAC_MIN_GAP_WIDTH = 65;
-const TIC_TAC_MAX_GAP_WIDTH = 280;
-const TIC_TAC_WALL_HOLD_TIME = 0.08;
-const TIC_TAC_JUMP_COOLDOWN = 0.09;
-const TIC_TAC_PERSIST_TIME = 0.28;
-const SHAFT_MIN_EXTRA_WIDTH = 8;
-const SHAFT_EXIT_MARGIN = 18;
-const SHAFT_HOP_COOLDOWN = 0.16;
-const SHAFT_STALL_WINDOW = 1.1;
-const SHAFT_MIN_VERTICAL_GAIN = 8;
-const MANEUVER_STALL_WINDOW = 1.1;
-const MANEUVER_MIN_DIST_IMPROVEMENT = 4;
-const MANEUVER_MIN_VERTICAL_GAIN = 6;
-const WAYPOINT_SWITCH_HOLD_MS = 1350;
-const WAYPOINT_SWITCH_MARGIN = 85;
-const WAYPOINT_RECENT_SWITCH_WINDOW_MS = 3200;
-const WAYPOINT_RECENT_SWITCH_PENALTY = 140;
-const PLATFORM_AIM_REFERENCE_BLEND = 0.82;
-const PLATFORM_AIM_MAX_BIAS = 52;
-const PLATFORM_AIM_MIN_WIDTH_FOR_BIAS = 90;
-const DOWN_SEAL_SAMPLE_STEP = 18;
-const DOWN_SEAL_SCAN_DEPTH = 26;
-const DOWN_SEAL_SAMPLE_HALF = 3;
-const DOWN_SEAL_SIDE_WALL_DEPTH = 90;
-const DOWN_SEAL_MIN_COVERAGE = 0.92;
-const DOWN_SEAL_MAX_OPEN_RUN = 1;
-const DOWN_SEAL_REROUTE_COOLDOWN = 0.9;
-const EDGE_DROP_INTENT_STUCK_WINDOW = 0.72;
-const EDGE_DROP_INTENT_FALL_VY = 55;
-const BOT_STAND_WIDTH = 20;
-const BOT_STAND_HEIGHT = 40;
-const MANUAL_SAFE_HEADROOM = 44;
-const MANUAL_SAFE_LEDGE_WIDTH = 34;
-const MANUAL_SAFE_EDGE_MARGIN = 12;
-const MANUAL_SNAP_RADIUS_X = 260;
-const MANUAL_SNAP_RADIUS_Y = 320;
-const BREADCRUMB_COST_LOOKBACK = 5;
-const BREADCRUMB_COST_EDGE_INVALID_MS = 8000;
-const BREADCRUMB_COST_TTL_MS = 10000;
-const BREADCRUMB_COST_BASE = 48;
-const BREADCRUMB_COST_STEP = 12;
-const BREADCRUMB_COST_MAX = 170;
-const LOOP_SIGNATURE_WINDOW_MS = 60000;
-const LOOP_SIGNATURE_ESCALATE_COUNT = 3;
-const LOOP_FALLBACK_IDLE_MIN = 0.22;
-const LOOP_FALLBACK_IDLE_MAX = 0.45;
-const ISLAND_EDGE_ESCAPE_X_PAD = 28;
-const ISLAND_EDGE_ESCAPE_DROP_Y = 150;
-const ISLAND_EDGE_ESCAPE_FREEZE = 3.2;
-const ISLAND_EDGE_ESCAPE_COMMIT = 0.95;
-const WORLD_CHECKSUM_COLLIDER_TOL = 2;
-const WORLD_CHECKSUM_ONEWAY_TOL = 1;
-const WORLD_CHECKSUM_DRIFT_CONFIRM_REVISIONS = 2;
-const WORLD_CHECKSUM_REPLAN_COOLDOWN = 0.55;
-const PROGRESS_WINDOW_TICKS = 36;
-const PROGRESS_SCALAR_EPS = 4;
-const PROGRESS_REPLAN_EPS = 8;
-const PROGRESS_REPLAN_GATE_TICKS = 10;
-const PROGRESS_FLAT_RESET_TICKS = 52;
-const PROGRESS_FLAT_RESET_MIN_SEEK_SEC = 1.8;
-const PROGRESS_FLAT_RESET_MIN_SEEK_DROP_SEC = 3.2;
-const PROGRESS_RESET_COOLDOWN = 0.9;
-const PING_PONG_COMMIT_MIN = 0.65;
-const PING_PONG_COMMIT_MAX = 1.1;
-const SEEK_HARD_CEILING = 20.0;
-const TARGET_PICK_DOMINANCE_GAP = 18;
-const ISLAND_MODE_LATCH_SEC = 3.8;
-const ISLAND_MODE_FREEZE_SEC = 2.4;
-const ESCALATION_TIMER_FLOOR = 0.45;
-const RECENT_WARP_HISTORY = 7;
-const REGION_BLACKLIST_TTL_MS = 7000;
-const REGION_BLACKLIST_MAX_ENTRIES = 28;
-const REGION_FAILURE_SIGNATURE_TTL_MS = 14000;
-const REGION_FAILURE_SIGNATURE_ESCALATE = 3;
-const CORRIDOR_FAILURE_TTL_MS = 9000;
-const CORRIDOR_FAILURE_PENALTY = 140;
+import { BrainConstants } from './brain-constants';
 
 export interface BrainLogEntry {
     time: string;
@@ -784,8 +632,8 @@ export class Brain {
             y,
             vx: 0,
             vy: 0,
-            width: BOT_STAND_WIDTH,
-            height: BOT_STAND_HEIGHT,
+            width: BrainConstants.BOT_STAND_WIDTH,
+            height: BrainConstants.BOT_STAND_HEIGHT,
             grounded: false,
             groundedId: null,
             jumps: 0,
@@ -804,19 +652,19 @@ export class Brain {
         if (platform.kind !== 'rect' || !platform.flags.solid) return null;
 
         const platformWidth = platform.aabb.x2 - platform.aabb.x1;
-        if (platformWidth < MANUAL_SAFE_LEDGE_WIDTH) return null;
+        if (platformWidth < BrainConstants.MANUAL_SAFE_LEDGE_WIDTH) return null;
 
-        const standMinX = platform.aabb.x1 + MANUAL_SAFE_EDGE_MARGIN;
-        const standMaxX = platform.aabb.x2 - MANUAL_SAFE_EDGE_MARGIN;
+        const standMinX = platform.aabb.x1 + BrainConstants.MANUAL_SAFE_EDGE_MARGIN;
+        const standMaxX = platform.aabb.x2 - BrainConstants.MANUAL_SAFE_EDGE_MARGIN;
         if (standMinX >= standMaxX) return null;
 
         const snappedX = Math.max(standMinX, Math.min(standMaxX, referenceX));
         const snappedY = platform.aabb.y1;
 
         const bodyProbe: AABB = {
-            x1: snappedX - BOT_STAND_WIDTH / 2 + 1,
-            y1: snappedY - BOT_STAND_HEIGHT,
-            x2: snappedX + BOT_STAND_WIDTH / 2 - 1,
+            x1: snappedX - BrainConstants.BOT_STAND_WIDTH / 2 + 1,
+            y1: snappedY - BrainConstants.BOT_STAND_HEIGHT,
+            x2: snappedX + BrainConstants.BOT_STAND_WIDTH / 2 - 1,
             y2: snappedY - 1
         };
         const bodyBlocked = this.world.query(bodyProbe).some((c) =>
@@ -829,10 +677,10 @@ export class Brain {
 
         if (requiresHeadroom) {
             const headroomProbe: AABB = {
-                x1: snappedX - BOT_STAND_WIDTH / 2 + 2,
-                y1: snappedY - MANUAL_SAFE_HEADROOM,
-                x2: snappedX + BOT_STAND_WIDTH / 2 - 2,
-                y2: snappedY - BOT_STAND_HEIGHT + 1
+                x1: snappedX - BrainConstants.BOT_STAND_WIDTH / 2 + 2,
+                y1: snappedY - BrainConstants.MANUAL_SAFE_HEADROOM,
+                x2: snappedX + BrainConstants.BOT_STAND_WIDTH / 2 - 2,
+                y2: snappedY - BrainConstants.BOT_STAND_HEIGHT + 1
             };
             const headBlocked = this.world.query(headroomProbe).some((c) =>
                 c.id !== platform.id
@@ -874,10 +722,10 @@ export class Brain {
 
         let best: ManualStandPose | null = null;
         const nearby = this.world.query({
-            x1: rawX - MANUAL_SNAP_RADIUS_X,
-            y1: rawY - MANUAL_SNAP_RADIUS_Y,
-            x2: rawX + MANUAL_SNAP_RADIUS_X,
-            y2: rawY + MANUAL_SNAP_RADIUS_Y
+            x1: rawX - BrainConstants.MANUAL_SNAP_RADIUS_X,
+            y1: rawY - BrainConstants.MANUAL_SNAP_RADIUS_Y,
+            x2: rawX + BrainConstants.MANUAL_SNAP_RADIUS_X,
+            y2: rawY + BrainConstants.MANUAL_SNAP_RADIUS_Y
         });
         for (const c of nearby) {
             const pose = this.buildManualStandPose(c, rawX, rawY, preferredId, requiresHeadroom);
@@ -903,13 +751,13 @@ export class Brain {
         // Keep anchors stationary, but bias toward the approach side on wide platforms.
         // This prevents navX from pinning hard-center and wasting movement on large ledges.
         const span = max - min;
-        if (span < PLATFORM_AIM_MIN_WIDTH_FOR_BIAS) {
+        if (span < BrainConstants.PLATFORM_AIM_MIN_WIDTH_FOR_BIAS) {
             return Math.max(min, Math.min(max, center));
         }
 
         const clampedRef = Math.max(min, Math.min(max, referenceX));
-        const rawBias = (clampedRef - center) * PLATFORM_AIM_REFERENCE_BLEND;
-        const maxBias = Math.min(PLATFORM_AIM_MAX_BIAS, span * 0.34);
+        const rawBias = (clampedRef - center) * BrainConstants.PLATFORM_AIM_REFERENCE_BLEND;
+        const maxBias = Math.min(BrainConstants.PLATFORM_AIM_MAX_BIAS, span * 0.34);
         const biased = center + Math.max(-maxBias, Math.min(maxBias, rawBias));
         return Math.max(min, Math.min(max, biased));
     }
@@ -998,7 +846,7 @@ export class Brain {
     public getPlannerContext(pose: Pose, relaxed: boolean = false): PlannerContext {
         return {
             jumpReady: relaxed ? true : (this.jumpCooldown <= 0.02 || !pose.grounded),
-            airJumpsAvailable: relaxed ? (MAX_TOTAL_JUMPS - 1) : Math.max(0, MAX_TOTAL_JUMPS - pose.jumps),
+            airJumpsAvailable: relaxed ? (BrainConstants.MAX_TOTAL_JUMPS - 1) : Math.max(0, BrainConstants.MAX_TOTAL_JUMPS - pose.jumps),
             railLatchReady: true
         };
     }
@@ -1248,7 +1096,7 @@ export class Brain {
         const verticalGain = this.maneuverStartFeetY !== null ? this.maneuverStartFeetY - botFeetY : 0;
 
         let improved = false;
-        if (distToTakeoff + MANEUVER_MIN_DIST_IMPROVEMENT < this.bestDistToTakeoff) {
+        if (distToTakeoff + BrainConstants.MANEUVER_MIN_DIST_IMPROVEMENT < this.bestDistToTakeoff) {
             this.bestDistToTakeoff = distToTakeoff;
             improved = true;
         }
@@ -1256,7 +1104,7 @@ export class Brain {
             this.bestLOS = los;
             improved = true;
         }
-        if (verticalGain > this.bestVerticalGain + MANEUVER_MIN_VERTICAL_GAIN) {
+        if (verticalGain > this.bestVerticalGain + BrainConstants.MANEUVER_MIN_VERTICAL_GAIN) {
             this.bestVerticalGain = verticalGain;
             improved = true;
         }
@@ -1264,7 +1112,7 @@ export class Brain {
         if (improved) this.maneuverStagnationTimer = 0;
         else this.maneuverStagnationTimer += dt;
 
-        if (this.maneuverStagnationTimer >= MANEUVER_STALL_WINDOW) {
+        if (this.maneuverStagnationTimer >= BrainConstants.MANEUVER_STALL_WINDOW) {
             this.invalidateActiveManeuver(pose, 'maneuver-no-progress');
             this.maneuverStagnationTimer = 0;
             this.bestDistToTakeoff = Infinity;
@@ -1280,14 +1128,14 @@ export class Brain {
     private noteWaypointSwitch(now: number) {
         this.lastWaypointSwitchTime = now;
         this.waypointSwitchTimes.push(now);
-        const cutoff = now - WAYPOINT_RECENT_SWITCH_WINDOW_MS;
+        const cutoff = now - BrainConstants.WAYPOINT_RECENT_SWITCH_WINDOW_MS;
         this.waypointSwitchTimes = this.waypointSwitchTimes.filter((t) => t >= cutoff);
     }
 
     private getWaypointSwitchPenalty(now: number): number {
-        const cutoff = now - WAYPOINT_RECENT_SWITCH_WINDOW_MS;
+        const cutoff = now - BrainConstants.WAYPOINT_RECENT_SWITCH_WINDOW_MS;
         this.waypointSwitchTimes = this.waypointSwitchTimes.filter((t) => t >= cutoff);
-        return this.waypointSwitchTimes.length * WAYPOINT_RECENT_SWITCH_PENALTY;
+        return this.waypointSwitchTimes.length * BrainConstants.WAYPOINT_RECENT_SWITCH_PENALTY;
     }
 
     private resetManeuverTracking() {
@@ -1344,9 +1192,9 @@ export class Brain {
         const oneWayDelta = Math.abs(next.oneWayCount - prev.oneWayCount);
         const hashChanged = next.keyHash !== prev.keyHash;
 
-        return colliderDelta > WORLD_CHECKSUM_COLLIDER_TOL
-            || solidDelta > WORLD_CHECKSUM_COLLIDER_TOL
-            || oneWayDelta > WORLD_CHECKSUM_ONEWAY_TOL
+        return colliderDelta > BrainConstants.WORLD_CHECKSUM_COLLIDER_TOL
+            || solidDelta > BrainConstants.WORLD_CHECKSUM_COLLIDER_TOL
+            || oneWayDelta > BrainConstants.WORLD_CHECKSUM_ONEWAY_TOL
             || hashChanged;
     }
 
@@ -1354,7 +1202,7 @@ export class Brain {
         const now = performance.now();
         const list = this.recentUnreachable.get(groundedId) || [];
         list.push({ targetId, time: now });
-        const fresh = list.filter(e => now - e.time < REGION_BLACKLIST_TTL_MS);
+        const fresh = list.filter(e => now - e.time < BrainConstants.REGION_BLACKLIST_TTL_MS);
         this.recentUnreachable.set(groundedId, fresh);
     }
 
@@ -1363,7 +1211,7 @@ export class Brain {
         if (!list) return false;
         const now = performance.now();
         // Lazy cleanup during read
-        const fresh = list.filter(e => now - e.time < REGION_BLACKLIST_TTL_MS);
+        const fresh = list.filter(e => now - e.time < BrainConstants.REGION_BLACKLIST_TTL_MS);
         if (fresh.length !== list.length) {
             if (fresh.length === 0) this.recentUnreachable.delete(groundedId);
             else this.recentUnreachable.set(groundedId, fresh);
@@ -1413,7 +1261,7 @@ export class Brain {
         key: string,
         targetId: number | null,
         reason: string,
-        ttlMs: number = REGION_BLACKLIST_TTL_MS
+        ttlMs: number = BrainConstants.REGION_BLACKLIST_TTL_MS
     ) {
         const now = performance.now();
         const entries = this.regionBlacklist.get(groundedId) ?? new Map<string, RegionBlacklistEntry>();
@@ -1425,10 +1273,10 @@ export class Brain {
             expiresAt: now + ttlMs
         });
 
-        if (entries.size > REGION_BLACKLIST_MAX_ENTRIES) {
+        if (entries.size > BrainConstants.REGION_BLACKLIST_MAX_ENTRIES) {
             const ordered = Array.from(entries.entries())
                 .sort((a, b) => a[1].expiresAt - b[1].expiresAt);
-            while (ordered.length > REGION_BLACKLIST_MAX_ENTRIES) {
+            while (ordered.length > BrainConstants.REGION_BLACKLIST_MAX_ENTRIES) {
                 const remove = ordered.shift();
                 if (!remove) break;
                 entries.delete(remove[0]);
@@ -1445,7 +1293,7 @@ export class Brain {
         const count = prev && prev.expiresAt > now ? prev.count + 1 : 1;
         this.regionFailureSignatures.set(key, {
             count,
-            expiresAt: now + REGION_FAILURE_SIGNATURE_TTL_MS
+            expiresAt: now + BrainConstants.REGION_FAILURE_SIGNATURE_TTL_MS
         });
         return count;
     }
@@ -1463,7 +1311,7 @@ export class Brain {
     ): number {
         if (groundedId === null || targetId === null) return 0;
 
-        const ttlMs = options?.ttlMs ?? REGION_BLACKLIST_TTL_MS;
+        const ttlMs = options?.ttlMs ?? BrainConstants.REGION_BLACKLIST_TTL_MS;
         if (!options?.edgeOnly) {
             this.markTargetUnreachable(groundedId, targetId);
             this.addRegionBlacklistEntry(
@@ -1483,10 +1331,10 @@ export class Brain {
             ttlMs
         );
 
-        this.corridorFailureMemory.set(`${groundedId}->${targetId}`, performance.now() + CORRIDOR_FAILURE_TTL_MS);
+        this.corridorFailureMemory.set(`${groundedId}->${targetId}`, performance.now() + BrainConstants.CORRIDOR_FAILURE_TTL_MS);
 
         const hits = this.noteRegionFailureSignature(groundedId, `${targetId}:${reason}`);
-        if (hits >= REGION_FAILURE_SIGNATURE_ESCALATE) {
+        if (hits >= BrainConstants.REGION_FAILURE_SIGNATURE_ESCALATE) {
             this.addRegionBlacklistEntry(
                 groundedId,
                 this.getRegionTargetKey(targetId),
@@ -1542,7 +1390,7 @@ export class Brain {
         const expiresAt = this.corridorFailureMemory.get(key);
         if (!expiresAt) return 0;
         const remaining = Math.max(0, expiresAt - performance.now());
-        const scaled = Math.min(CORRIDOR_FAILURE_PENALTY, remaining / 55);
+        const scaled = Math.min(BrainConstants.CORRIDOR_FAILURE_PENALTY, remaining / 55);
         return Math.max(40, scaled);
     }
 
@@ -1570,14 +1418,14 @@ export class Brain {
         if (this.currentState === 'seek') {
             this.reroute(pose, 'world-checksum-drift');
         }
-        this.worldChecksumReplanCooldown = WORLD_CHECKSUM_REPLAN_COOLDOWN;
+        this.worldChecksumReplanCooldown = BrainConstants.WORLD_CHECKSUM_REPLAN_COOLDOWN;
     }
 
     private measureCorridor(pose: Pose): CorridorProbeResult | null {
         const y1 = pose.y + 6;
         const y2 = pose.y + pose.height - 6;
         const leftProbe: AABB = {
-            x1: pose.x - TIC_TAC_SCAN_DIST,
+            x1: pose.x - BrainConstants.TIC_TAC_SCAN_DIST,
             y1,
             x2: pose.x + 2,
             y2
@@ -1585,7 +1433,7 @@ export class Brain {
         const rightProbe: AABB = {
             x1: pose.x + pose.width - 2,
             y1,
-            x2: pose.x + pose.width + TIC_TAC_SCAN_DIST,
+            x2: pose.x + pose.width + BrainConstants.TIC_TAC_SCAN_DIST,
             y2
         };
 
@@ -1594,7 +1442,7 @@ export class Brain {
         for (const c of this.world.query(leftProbe)) {
             if (c.kind !== 'rect' || !c.flags.solid || c.flags.oneWay) continue;
             const overlapY = Math.min(y2, c.aabb.y2) - Math.max(y1, c.aabb.y1);
-            if (overlapY < TIC_TAC_MIN_OVERLAP_Y) continue;
+            if (overlapY < BrainConstants.TIC_TAC_MIN_OVERLAP_Y) continue;
 
             const dist = pose.x - c.aabb.x2;
             if (dist < -6) continue;
@@ -1610,7 +1458,7 @@ export class Brain {
         for (const c of this.world.query(rightProbe)) {
             if (c.kind !== 'rect' || !c.flags.solid || c.flags.oneWay) continue;
             const overlapY = Math.min(y2, c.aabb.y2) - Math.max(y1, c.aabb.y1);
-            if (overlapY < TIC_TAC_MIN_OVERLAP_Y) continue;
+            if (overlapY < BrainConstants.TIC_TAC_MIN_OVERLAP_Y) continue;
 
             const dist = c.aabb.x1 - (pose.x + pose.width);
             if (dist < -6) continue;
@@ -1629,7 +1477,7 @@ export class Brain {
     private measureTicTacCorridor(pose: Pose): CorridorProbeResult | null {
         const corridor = this.measureCorridor(pose);
         if (!corridor) return null;
-        if (corridor.width < TIC_TAC_MIN_GAP_WIDTH || corridor.width > TIC_TAC_MAX_GAP_WIDTH) return null;
+        if (corridor.width < BrainConstants.TIC_TAC_MIN_GAP_WIDTH || corridor.width > BrainConstants.TIC_TAC_MAX_GAP_WIDTH) return null;
 
         const key = `${Math.round(corridor.leftWallX)}:${Math.round(corridor.rightWallX)}`;
         if (this.ticTacCooldowns.has(key)) {
@@ -1647,9 +1495,9 @@ export class Brain {
     ): CorridorProbeResult | null {
         const corridor = corridorHint ?? this.measureCorridor(pose);
         if (!corridor) return null;
-        const minWidth = pose.width + SHAFT_MIN_EXTRA_WIDTH;
+        const minWidth = pose.width + BrainConstants.SHAFT_MIN_EXTRA_WIDTH;
         if (corridor.width < minWidth) return null;
-        if (corridor.width >= TIC_TAC_MIN_GAP_WIDTH) return null;
+        if (corridor.width >= BrainConstants.TIC_TAC_MIN_GAP_WIDTH) return null;
         return corridor;
     }
 
@@ -1666,27 +1514,27 @@ export class Brain {
             && startBodyAABB.y1 < b.y2
             && startBodyAABB.y2 > b.y1;
 
-        const dt = CEILING_ARC_PROBE_TIME / CEILING_ARC_PROBE_SAMPLES;
+        const dt = BrainConstants.CEILING_ARC_PROBE_TIME / BrainConstants.CEILING_ARC_PROBE_SAMPLES;
         let simX = pose.x + pose.width / 2;
         let simY = pose.y + 2;
         let simVx = dir > 0 ? Math.max(0, pose.vx) : Math.min(0, pose.vx);
-        let simVy = -CEILING_ARC_JUMP_SPEED;
+        let simVy = -BrainConstants.CEILING_ARC_JUMP_SPEED;
         let clearSamples = 0;
 
-        for (let i = 0; i < CEILING_ARC_PROBE_SAMPLES; i++) {
-            const targetVx = dir * CEILING_ARC_TARGET_VX;
-            if (simVx < targetVx) simVx = Math.min(targetVx, simVx + CEILING_ARC_AIR_ACCEL * dt);
-            else if (simVx > targetVx) simVx = Math.max(targetVx, simVx - CEILING_ARC_AIR_ACCEL * dt);
+        for (let i = 0; i < BrainConstants.CEILING_ARC_PROBE_SAMPLES; i++) {
+            const targetVx = dir * BrainConstants.CEILING_ARC_TARGET_VX;
+            if (simVx < targetVx) simVx = Math.min(targetVx, simVx + BrainConstants.CEILING_ARC_AIR_ACCEL * dt);
+            else if (simVx > targetVx) simVx = Math.max(targetVx, simVx - BrainConstants.CEILING_ARC_AIR_ACCEL * dt);
 
-            simVy += CEILING_ARC_GRAVITY * dt;
+            simVy += BrainConstants.CEILING_ARC_GRAVITY * dt;
             simX += simVx * dt;
             simY += simVy * dt;
 
             const probe: AABB = {
-                x1: simX - CEILING_ARC_PROBE_HALF_WIDTH,
-                x2: simX + CEILING_ARC_PROBE_HALF_WIDTH,
-                y1: simY - CEILING_ARC_PROBE_HEIGHT_ABOVE,
-                y2: simY + CEILING_ARC_PROBE_HEIGHT_BELOW
+                x1: simX - BrainConstants.CEILING_ARC_PROBE_HALF_WIDTH,
+                x2: simX + BrainConstants.CEILING_ARC_PROBE_HALF_WIDTH,
+                y1: simY - BrainConstants.CEILING_ARC_PROBE_HEIGHT_ABOVE,
+                y2: simY + BrainConstants.CEILING_ARC_PROBE_HEIGHT_BELOW
             };
 
             const blocked = this.world.query(probe).some((c) =>
@@ -1700,8 +1548,8 @@ export class Brain {
         }
 
         return {
-            blocked: clearSamples < CEILING_ARC_PROBE_SAMPLES,
-            clearance: clearSamples / CEILING_ARC_PROBE_SAMPLES
+            blocked: clearSamples < BrainConstants.CEILING_ARC_PROBE_SAMPLES,
+            clearance: clearSamples / BrainConstants.CEILING_ARC_PROBE_SAMPLES
         };
     }
 
@@ -1713,9 +1561,9 @@ export class Brain {
             return { sealed: false, coverage: 0, leftWall: false, rightWall: false, openRun: 0 };
         }
 
-        const sampleY = groundedCollider.aabb.y2 + DOWN_SEAL_SCAN_DEPTH;
+        const sampleY = groundedCollider.aabb.y2 + BrainConstants.DOWN_SEAL_SCAN_DEPTH;
         const samples: number[] = [];
-        for (let x = xMin; x <= xMax + 0.001; x += DOWN_SEAL_SAMPLE_STEP) {
+        for (let x = xMin; x <= xMax + 0.001; x += BrainConstants.DOWN_SEAL_SAMPLE_STEP) {
             samples.push(Math.min(x, xMax));
         }
         if (samples.length === 0 || samples[samples.length - 1] < xMax - 1) {
@@ -1727,8 +1575,8 @@ export class Brain {
         let maxOpenRun = 0;
         for (const sx of samples) {
             const probe: AABB = {
-                x1: sx - DOWN_SEAL_SAMPLE_HALF,
-                x2: sx + DOWN_SEAL_SAMPLE_HALF,
+                x1: sx - BrainConstants.DOWN_SEAL_SAMPLE_HALF,
+                x2: sx + BrainConstants.DOWN_SEAL_SAMPLE_HALF,
                 y1: sampleY - 8,
                 y2: sampleY + 8
             };
@@ -1752,13 +1600,13 @@ export class Brain {
             x1: groundedCollider.aabb.x1 - 18,
             x2: groundedCollider.aabb.x1 + 2,
             y1: groundedCollider.aabb.y1 + 2,
-            y2: groundedCollider.aabb.y2 + DOWN_SEAL_SIDE_WALL_DEPTH
+            y2: groundedCollider.aabb.y2 + BrainConstants.DOWN_SEAL_SIDE_WALL_DEPTH
         };
         const rightWallProbe: AABB = {
             x1: groundedCollider.aabb.x2 - 2,
             x2: groundedCollider.aabb.x2 + 18,
             y1: groundedCollider.aabb.y1 + 2,
-            y2: groundedCollider.aabb.y2 + DOWN_SEAL_SIDE_WALL_DEPTH
+            y2: groundedCollider.aabb.y2 + BrainConstants.DOWN_SEAL_SIDE_WALL_DEPTH
         };
         const leftWall = this.world.query(leftWallProbe).some((c) =>
             c.id !== groundedCollider.id
@@ -1773,8 +1621,8 @@ export class Brain {
             && !c.flags.oneWay
         );
 
-        const sealed = coverage >= DOWN_SEAL_MIN_COVERAGE
-            && maxOpenRun <= DOWN_SEAL_MAX_OPEN_RUN
+        const sealed = coverage >= BrainConstants.DOWN_SEAL_MIN_COVERAGE
+            && maxOpenRun <= BrainConstants.DOWN_SEAL_MAX_OPEN_RUN
             && leftWall
             && rightWall;
         return { sealed, coverage, leftWall, rightWall, openRun: maxOpenRun };
@@ -1818,7 +1666,7 @@ export class Brain {
             dist: currentDist
         };
         this.progressSamples.push(sample);
-        if (this.progressSamples.length > PROGRESS_WINDOW_TICKS) {
+        if (this.progressSamples.length > BrainConstants.PROGRESS_WINDOW_TICKS) {
             this.progressSamples.shift();
         }
 
@@ -1842,7 +1690,7 @@ export class Brain {
         const targetDistanceReduction = Math.max(0, first.dist - minDist);
         this.progressScalar = Math.max(bestXDeltaImprovement, bestYImprovement, targetDistanceReduction);
 
-        if (this.progressScalar < PROGRESS_SCALAR_EPS) this.progressFlatTicks++;
+        if (this.progressScalar < BrainConstants.PROGRESS_SCALAR_EPS) this.progressFlatTicks++;
         else this.progressFlatTicks = 0;
 
         return this.progressScalar;
@@ -1852,11 +1700,11 @@ export class Brain {
         if (this.targetSelectFreezeTimer > 0) return false;
         if (this.currentState !== 'seek') return true;
         if (this.progressSamples.length < 2) return true;
-        return this.progressFlatTicks >= PROGRESS_REPLAN_GATE_TICKS || this.progressScalar <= PROGRESS_REPLAN_EPS;
+        return this.progressFlatTicks >= BrainConstants.PROGRESS_REPLAN_GATE_TICKS || this.progressScalar <= BrainConstants.PROGRESS_REPLAN_EPS;
     }
 
     private getPingPongCommitWindow(): number {
-        return PING_PONG_COMMIT_MIN + Math.random() * (PING_PONG_COMMIT_MAX - PING_PONG_COMMIT_MIN);
+        return BrainConstants.PING_PONG_COMMIT_MIN + Math.random() * (BrainConstants.PING_PONG_COMMIT_MAX - BrainConstants.PING_PONG_COMMIT_MIN);
     }
 
     private forceProgressResetAndReselect(pose: Pose, reason: string) {
@@ -1893,7 +1741,7 @@ export class Brain {
         this.navState = 'nav-align';
         this.takeoffZone = null;
         this.patienceTimer = 0;
-        this.progressResetCooldown = PROGRESS_RESET_COOLDOWN;
+        this.progressResetCooldown = BrainConstants.PROGRESS_RESET_COOLDOWN;
         this.targetSelectFreezeTimer = 0;
         this.resetProgressTracking();
         this.resetManeuverTracking();
@@ -1989,7 +1837,7 @@ export class Brain {
             detail
         };
         this.log.push(entry);
-        if (this.log.length > MAX_LOG_ENTRIES) this.log.shift();
+        if (this.log.length > BrainConstants.MAX_LOG_ENTRIES) this.log.shift();
 
         if (this.lockedTargetId !== null) {
             if (event === 'PLAN_FAILURE' || event === 'GRAPH_FAIL' || event === 'seek-timeout' || event === 'stuck' || event === 'ABORT_MOVE') {
@@ -2144,7 +1992,7 @@ export class Brain {
                     this.worldChecksumDriftStreak = 1;
                 }
 
-                if (this.worldChecksumDriftStreak >= WORLD_CHECKSUM_DRIFT_CONFIRM_REVISIONS) {
+                if (this.worldChecksumDriftStreak >= BrainConstants.WORLD_CHECKSUM_DRIFT_CONFIRM_REVISIONS) {
                     this.invalidatePlanForWorldDrift(pose, this.worldChecksumSeen, worldChecksum);
                     this.worldChecksumDriftStreak = 0;
                     this.worldChecksumDriftSignature = null;
@@ -2152,7 +2000,7 @@ export class Brain {
                     this.recordLog(
                         'WORLD_CHECKSUM_PENDING',
                         pose,
-                        `drift ${this.worldChecksumDriftStreak}/${WORLD_CHECKSUM_DRIFT_CONFIRM_REVISIONS} c:${this.worldChecksumSeen.colliderCount}->${worldChecksum.colliderCount} s:${this.worldChecksumSeen.solidCount}->${worldChecksum.solidCount} ow:${this.worldChecksumSeen.oneWayCount}->${worldChecksum.oneWayCount}`
+                        `drift ${this.worldChecksumDriftStreak}/${BrainConstants.WORLD_CHECKSUM_DRIFT_CONFIRM_REVISIONS} c:${this.worldChecksumSeen.colliderCount}->${worldChecksum.colliderCount} s:${this.worldChecksumSeen.solidCount}->${worldChecksum.solidCount} ow:${this.worldChecksumSeen.oneWayCount}->${worldChecksum.oneWayCount}`
                     );
                 }
             } else {
@@ -2291,12 +2139,12 @@ export class Brain {
 
         if (pose.ceilingBonk) {
             this.ceilingBonkCount = this.ceilingBonkWindow > 0 ? this.ceilingBonkCount + 1 : 1;
-            this.ceilingBonkWindow = CEILING_BONK_WINDOW;
-            const suppressFor = CEILING_BONK_SUPPRESS_BASE + Math.min(this.ceilingBonkCount, 3) * CEILING_BONK_SUPPRESS_STEP;
+            this.ceilingBonkWindow = BrainConstants.CEILING_BONK_WINDOW;
+            const suppressFor = BrainConstants.CEILING_BONK_SUPPRESS_BASE + Math.min(this.ceilingBonkCount, 3) * BrainConstants.CEILING_BONK_SUPPRESS_STEP;
             this.ceilingJumpSuppressTimer = Math.max(this.ceilingJumpSuppressTimer, suppressFor);
             this.recordLog('CEILING_BONK', pose, `count=${this.ceilingBonkCount} suppress=${this.ceilingJumpSuppressTimer.toFixed(2)}`);
 
-            if (this.ceilingBonkCount >= CEILING_BONK_REROUTE_HITS && this.currentState === 'seek') {
+            if (this.ceilingBonkCount >= BrainConstants.CEILING_BONK_REROUTE_HITS && this.currentState === 'seek') {
                 this.recordLog('CEILING_LOOP', pose, `reroute after ${this.ceilingBonkCount} bonks`);
 
                 // CRITICAL FIX: If we have an active maneuver, invalidate it so the planner finds a different way.
@@ -2514,7 +2362,7 @@ export class Brain {
             const hardStuckNow = seekNeedsTravel && pose.grounded && Math.abs(pose.vx) < 18;
             if (hardStuckNow) this.seekHardTimer += dt;
             else this.seekHardTimer = Math.max(0, this.seekHardTimer - dt * 2.2);
-            if (this.seekHardTimer > SEEK_HARD_CEILING) {
+            if (this.seekHardTimer > BrainConstants.SEEK_HARD_CEILING) {
                 this.recordLog('SEEK_HARD_CEILING', pose, `${this.seekHardTimer.toFixed(1)}s in seek — hard reset`);
                 this.currentState = 'idle';
                 this.clearTargetLock();
@@ -2557,12 +2405,12 @@ export class Brain {
                 const hasGoalPressure = Math.abs(targetDx) > 12 || (targetDy !== null && Math.abs(targetDy) > 16);
                 this.updateProgressScalar(targetX, targetY, targetDx, targetDy, currentDist, hasGoalPressure);
 
-                if (this.progressFlatTicks >= PROGRESS_FLAT_RESET_TICKS) {
+                if (this.progressFlatTicks >= BrainConstants.PROGRESS_FLAT_RESET_TICKS) {
                     const dropLikeManeuver = this.activeManeuver !== null
                         && (this.activeManeuver.action === 'drop-edge' || this.activeManeuver.action === 'drop' || this.activeManeuver.action === 'walk');
                     const flatResetDelay = dropLikeManeuver
-                        ? PROGRESS_FLAT_RESET_MIN_SEEK_DROP_SEC
-                        : PROGRESS_FLAT_RESET_MIN_SEEK_SEC;
+                        ? BrainConstants.PROGRESS_FLAT_RESET_MIN_SEEK_DROP_SEC
+                        : BrainConstants.PROGRESS_FLAT_RESET_MIN_SEEK_SEC;
 
                     // Guardrail: allow physical recovery paths (stuck-hop, edge-drop intent, local reroute)
                     // to run before we hard-reset target selection on scalar flatness.
@@ -2616,16 +2464,16 @@ export class Brain {
                 }
 
                 const nearTarget = targetY !== null
-                    && Math.abs(targetDx) < SEEK_TIMEOUT_NEAR_DX
+                    && Math.abs(targetDx) < BrainConstants.SEEK_TIMEOUT_NEAR_DX
                     && targetDy !== null
-                    && Math.abs(targetDy) < SEEK_TIMEOUT_NEAR_DY;
-                const hasVxProgress = Math.abs(pose.vx) > SEEK_TIMEOUT_PROGRESS_VX;
+                    && Math.abs(targetDy) < BrainConstants.SEEK_TIMEOUT_NEAR_DY;
+                const hasVxProgress = Math.abs(pose.vx) > BrainConstants.SEEK_TIMEOUT_PROGRESS_VX;
 
                 let timeoutLimit = 4.5;
-                if (nearTarget) timeoutLimit += SEEK_TIMEOUT_NEAR_EXTEND;
-                if (hasVxProgress) timeoutLimit += SEEK_TIMEOUT_PROGRESS_EXTEND;
-                if (this.isDetourActive) timeoutLimit += SEEK_TIMEOUT_REROUTE_EXTEND;
-                timeoutLimit += this.retryCount * SEEK_TIMEOUT_RETRY_GRACE;
+                if (nearTarget) timeoutLimit += BrainConstants.SEEK_TIMEOUT_NEAR_EXTEND;
+                if (hasVxProgress) timeoutLimit += BrainConstants.SEEK_TIMEOUT_PROGRESS_EXTEND;
+                if (this.isDetourActive) timeoutLimit += BrainConstants.SEEK_TIMEOUT_REROUTE_EXTEND;
+                timeoutLimit += this.retryCount * BrainConstants.SEEK_TIMEOUT_RETRY_GRACE;
 
                 // Eject if stagnant for too long (Progress Metric Timeout OR FSM Stagnation)
                 if (this.progressStagnationTimer > timeoutLimit || this.fsmStagnationTimer > timeoutLimit) {
@@ -2676,19 +2524,19 @@ export class Brain {
                 let shouldMoveHorizontally = true;
                 const targetIsWallStep = !!this.targetPlatform
                     && !this.targetPlatform.flags.oneWay
-                    && (this.targetPlatform.aabb.x2 - this.targetPlatform.aabb.x1) <= WALL_STEP_MAX_WIDTH
-                    && (this.targetPlatform.aabb.y2 - this.targetPlatform.aabb.y1) >= WALL_STEP_MIN_HEIGHT
-                    && ((this.targetPlatform.aabb.y2 - this.targetPlatform.aabb.y1) / Math.max(this.targetPlatform.aabb.x2 - this.targetPlatform.aabb.x1, 1)) >= WALL_STEP_MIN_ASPECT;
+                    && (this.targetPlatform.aabb.x2 - this.targetPlatform.aabb.x1) <= BrainConstants.WALL_STEP_MAX_WIDTH
+                    && (this.targetPlatform.aabb.y2 - this.targetPlatform.aabb.y1) >= BrainConstants.WALL_STEP_MIN_HEIGHT
+                    && ((this.targetPlatform.aabb.y2 - this.targetPlatform.aabb.y1) / Math.max(this.targetPlatform.aabb.x2 - this.targetPlatform.aabb.x1, 1)) >= BrainConstants.WALL_STEP_MIN_ASPECT;
 
                 // ==== Auto-Waypoint Routing for tall climbs ====
                 if (pose.grounded
                     && this.targetPlatform
                     && this.lockedTargetId !== null
                     && this.targetPlatform.id === this.lockedTargetId
-                    && heightDiff > MAX_SINGLE_HOP) {
+                    && heightDiff > BrainConstants.MAX_SINGLE_HOP) {
             const waypoint = this.targetSelector.findWaypointBelow(pose, this.targetPlatform);
                     if (waypoint) {
-                        this.recordLog('WAYPOINT', pose, `hop via ID${waypoint.id} -> lock ID${this.lockedTargetId} (hdiff ${Math.round(heightDiff)} > ${MAX_SINGLE_HOP})`);
+                        this.recordLog('WAYPOINT', pose, `hop via ID${waypoint.id} -> lock ID${this.lockedTargetId} (hdiff ${Math.round(heightDiff)} > ${BrainConstants.MAX_SINGLE_HOP})`);
                         this.targetPlatform = waypoint;
                         const wpCx = (waypoint.aabb.x1 + waypoint.aabb.x2) / 2;
                         this.targetX = wpCx;
@@ -2725,9 +2573,9 @@ export class Brain {
                 let smartTargetX = targetX;
                 if (targetIsWallStep && this.targetPlatform) {
                     if (targetX > botCenterX) {
-                        smartTargetX = this.targetPlatform.aabb.x1 - WALL_STEP_FACE_OFFSET;
+                        smartTargetX = this.targetPlatform.aabb.x1 - BrainConstants.WALL_STEP_FACE_OFFSET;
                     } else {
-                        smartTargetX = this.targetPlatform.aabb.x2 + WALL_STEP_FACE_OFFSET;
+                        smartTargetX = this.targetPlatform.aabb.x2 + BrainConstants.WALL_STEP_FACE_OFFSET;
                     }
                 } else if (heightDiff > 60 && this.targetPlatform && !this.targetPlatform.flags.oneWay) {
                     if (targetX > botCenterX) {
@@ -2805,7 +2653,7 @@ export class Brain {
                                                 'NAV_ALIGN_FAIL',
                                                 { ttlMs: 9000 }
                                             );
-                                            if (alignHits >= REGION_FAILURE_SIGNATURE_ESCALATE) {
+                                            if (alignHits >= BrainConstants.REGION_FAILURE_SIGNATURE_ESCALATE) {
                                                 this.enterIslandMode(pose, 'align-repeat');
                                             }
                                             this.reroute(pose, 'align-fail');
@@ -2840,7 +2688,7 @@ export class Brain {
                         };
                         const nearWall = this.world.query(wallProbe).some(c =>
                             c.kind === 'rect' && c.flags.solid && !c.flags.oneWay
-                            && (c.aabb.y2 - c.aabb.y1) >= TIC_TAC_MIN_HEIGHT
+                            && (c.aabb.y2 - c.aabb.y1) >= BrainConstants.TIC_TAC_MIN_HEIGHT
                         );
 
                         // Also check if the bot is near the edge of its current platform
@@ -2901,11 +2749,11 @@ export class Brain {
                         navTargetX = jumpDir > 0 ? this.takeoffZone.maxX - 5 : this.takeoffZone.minX + 5;
 
                         const outsideZone =
-                            botCenterX < this.takeoffZone.minX - NAV_ZONE_EXIT_MARGIN
-                            || botCenterX > this.takeoffZone.maxX + NAV_ZONE_EXIT_MARGIN;
+                            botCenterX < this.takeoffZone.minX - BrainConstants.NAV_ZONE_EXIT_MARGIN
+                            || botCenterX > this.takeoffZone.maxX + BrainConstants.NAV_ZONE_EXIT_MARGIN;
                         if (outsideZone) {
                             this.navSlipTimer += dt;
-                            if (this.navSlipTimer >= NAV_ZONE_SLIP_GRACE) {
+                            if (this.navSlipTimer >= BrainConstants.NAV_ZONE_SLIP_GRACE) {
                                 this.navSlipCount++;
                                 if (this.navSlipCount > 3) {
                                     this.recordLog('NAV_SLIP_LOOP', pose, `count=${this.navSlipCount}`);
@@ -2984,11 +2832,11 @@ export class Brain {
                 }
 
                 const corridor = this.measureCorridor(pose);
-                const ticTacCorridor = corridor && corridor.width >= TIC_TAC_MIN_GAP_WIDTH && corridor.width <= TIC_TAC_MAX_GAP_WIDTH
+                const ticTacCorridor = corridor && corridor.width >= BrainConstants.TIC_TAC_MIN_GAP_WIDTH && corridor.width <= BrainConstants.TIC_TAC_MAX_GAP_WIDTH
                     ? corridor
                     : null;
                 const narrowShaftCorridor = this.measureNarrowShaftCorridor(pose, corridor);
-                if (ticTacCorridor) this.ticTacPersistTimer = TIC_TAC_PERSIST_TIME;
+                if (ticTacCorridor) this.ticTacPersistTimer = BrainConstants.TIC_TAC_PERSIST_TIME;
                 debugSnapshot.ticTacCorridorWidth = ticTacCorridor ? ticTacCorridor.width : null;
                 debugSnapshot.ticTacCorridorLeft = ticTacCorridor ? ticTacCorridor.leftDist : null;
                 debugSnapshot.ticTacCorridorRight = ticTacCorridor ? ticTacCorridor.rightDist : null;
@@ -2999,8 +2847,8 @@ export class Brain {
                     const insideStoredBounds = corridor !== null
                         && this.shaftCorridorLeftX !== null
                         && this.shaftCorridorRightX !== null
-                        && botCenterX >= this.shaftCorridorLeftX - SHAFT_EXIT_MARGIN
-                        && botCenterX <= this.shaftCorridorRightX + SHAFT_EXIT_MARGIN;
+                        && botCenterX >= this.shaftCorridorLeftX - BrainConstants.SHAFT_EXIT_MARGIN
+                        && botCenterX <= this.shaftCorridorRightX + BrainConstants.SHAFT_EXIT_MARGIN;
                     const noLongerUpwardGoal = targetY === null || heightDiff < 8;
                     if (!insideStoredBounds || (noLongerUpwardGoal && pose.grounded)) {
                         this.recordLog('SHAFT_CLIMB_END', pose, insideStoredBounds ? 'goal-level' : 'exit-bounds');
@@ -3009,7 +2857,7 @@ export class Brain {
                 }
 
                 if (!this.shaftClimbActive && !this.ticTacActive && narrowShaftCorridor && targetY !== null && heightDiff > 20) {
-                    const canTicTacAlso = ticTacCorridor !== null && heightDiff > TIC_TAC_MIN_HEIGHT && !pose.grounded;
+                    const canTicTacAlso = ticTacCorridor !== null && heightDiff > BrainConstants.TIC_TAC_MIN_HEIGHT && !pose.grounded;
 
                     let doShaftClimb = true;
                     if (canTicTacAlso) {
@@ -3049,14 +2897,14 @@ export class Brain {
                     }
                 }
 
-                const isDownwardTicTac = targetY !== null && heightDiff < -TIC_TAC_MIN_HEIGHT && (this.activeManeuver?.action === 'wall-slide' || this.ticTacActive);
+                const isDownwardTicTac = targetY !== null && heightDiff < -BrainConstants.TIC_TAC_MIN_HEIGHT && (this.activeManeuver?.action === 'wall-slide' || this.ticTacActive);
                 if (this.ceilingJumpSuppressTimer > 0 && this.ticTacActive) {
                     this.recordLog('TIC_TAC_END', pose, 'ceiling-suppress');
                     this.resetTicTacState();
                 }
                 const ticTacEligible =
                     targetY !== null &&
-                    (heightDiff > TIC_TAC_MIN_HEIGHT || isDownwardTicTac || this.ticTacActive) &&
+                    (heightDiff > BrainConstants.TIC_TAC_MIN_HEIGHT || isDownwardTicTac || this.ticTacActive) &&
                     !pose.grounded &&
                     !this.shaftClimbActive &&
                     this.ceilingJumpSuppressTimer <= 0 &&
@@ -3087,8 +2935,8 @@ export class Brain {
 
                     if (pose.grounded && this.wallDecisionTimer <= 0) {
                         requestJump(null, 'shaft-climb-kickoff');
-                        this.wallDecisionTimer = WALL_DECISION_COOLDOWN_FAST;
-                        this.shaftHopTimer = SHAFT_HOP_COOLDOWN;
+                        this.wallDecisionTimer = BrainConstants.WALL_DECISION_COOLDOWN_FAST;
+                        this.shaftHopTimer = BrainConstants.SHAFT_HOP_COOLDOWN;
                     } else if ((pose.state === 'wall-slide' || pose.state === 'climb')
                         && this.shaftHopTimer <= 0
                         && this.wallDecisionTimer <= 0) {
@@ -3097,23 +2945,23 @@ export class Brain {
                             : (pose.vy >= -10 || this.shaftStallTimer > 0.35);
                         if (shouldHop) {
                             requestJump(null, 'shaft-climb-hop');
-                            this.wallDecisionTimer = WALL_DECISION_COOLDOWN_FAST;
-                            this.shaftHopTimer = SHAFT_HOP_COOLDOWN;
+                            this.wallDecisionTimer = BrainConstants.WALL_DECISION_COOLDOWN_FAST;
+                            this.shaftHopTimer = BrainConstants.SHAFT_HOP_COOLDOWN;
                         }
                     }
 
-                    if (pose.y < this.shaftBestY - SHAFT_MIN_VERTICAL_GAIN) {
+                    if (pose.y < this.shaftBestY - BrainConstants.SHAFT_MIN_VERTICAL_GAIN) {
                         this.shaftBestY = pose.y;
                         this.shaftStallTimer = 0;
                     } else {
                         this.shaftStallTimer += dt;
                     }
 
-                    if (this.shaftStallTimer > SHAFT_STALL_WINDOW && this.wallDecisionTimer <= 0) {
+                    if (this.shaftStallTimer > BrainConstants.SHAFT_STALL_WINDOW && this.wallDecisionTimer <= 0) {
                         requestJump(null, 'shaft-climb-stall-hop');
-                        this.wallDecisionTimer = WALL_DECISION_COOLDOWN_FAST;
-                        this.shaftHopTimer = SHAFT_HOP_COOLDOWN;
-                        this.shaftStallTimer = SHAFT_STALL_WINDOW * 0.45;
+                        this.wallDecisionTimer = BrainConstants.WALL_DECISION_COOLDOWN_FAST;
+                        this.shaftHopTimer = BrainConstants.SHAFT_HOP_COOLDOWN;
+                        this.shaftStallTimer = BrainConstants.SHAFT_STALL_WINDOW * 0.45;
                         this.recordLog('SHAFT_CLIMB_STALL', pose, `w=${corridor ? Math.round(corridor.width) : '-'} dir=${this.shaftClimbWallDir > 0 ? 'R' : 'L'}`);
                     }
                 } else {
@@ -3150,14 +2998,14 @@ export class Brain {
                         const canKick = this.ticTacJumpTimer <= 0
                             && (pose.state === 'wall-slide' || pose.state === 'climb' || pose.vy >= 25);
                         const shouldKick = canKick
-                            && (this.ticTacWallHoldTimer >= TIC_TAC_WALL_HOLD_TIME || this.ticTacDir === wallDir);
+                            && (this.ticTacWallHoldTimer >= BrainConstants.TIC_TAC_WALL_HOLD_TIME || this.ticTacDir === wallDir);
                         if (shouldKick) {
                             const awayDir = (wallDir === 1 ? -1 : 1) as -1 | 1;
                             input.left = awayDir < 0;
                             input.right = awayDir > 0;
                             requestJump(null, awayDir > 0 ? 'tic-tac-right-kick' : 'tic-tac-left-kick');
                             this.ticTacDir = awayDir;
-                            this.ticTacJumpTimer = TIC_TAC_JUMP_COOLDOWN;
+                            this.ticTacJumpTimer = BrainConstants.TIC_TAC_JUMP_COOLDOWN;
                             this.ticTacWallHoldTimer = 0;
                             debugSnapshot.ticTacDir = this.ticTacDir;
                         }
@@ -3202,7 +3050,7 @@ export class Brain {
                     if (targetDir !== wallDir) {
                         if ((pose.state === 'wall-slide' || pose.state === 'climb') && this.wallDecisionTimer <= 0) {
                             requestJump(null, 'wall-reverse-hop');
-                            this.wallDecisionTimer = WALL_DECISION_COOLDOWN;
+                            this.wallDecisionTimer = BrainConstants.WALL_DECISION_COOLDOWN;
                         }
                     } else {
                         // Keep pressing into the wall while climbing upward to avoid losing wall contact.
@@ -3217,18 +3065,18 @@ export class Brain {
                         }).some(c => c.flags.solid && !c.flags.oneWay);
 
                         if (pose.state === 'wall-slide') {
-                            const preferClimb = heightDiff > WALL_CLIMB_PREFER_HEIGHT && !climbCeilingBlocked;
-                            const forceHop = this.wallSlideTimer >= WALL_SLIDE_FORCE_HOP_TIME && pose.vy >= 20;
+                            const preferClimb = heightDiff > BrainConstants.WALL_CLIMB_PREFER_HEIGHT && !climbCeilingBlocked;
+                            const forceHop = this.wallSlideTimer >= BrainConstants.WALL_SLIDE_FORCE_HOP_TIME && pose.vy >= 20;
                             if (preferClimb) {
                                 input.up = true;
                             }
 
                             if (forceHop && this.wallDecisionTimer <= 0) {
                                 requestJump(null, climbCeilingBlocked ? 'wall-slide-timeout-ceiling-hop' : 'wall-slide-timeout-hop');
-                                this.wallDecisionTimer = WALL_DECISION_COOLDOWN_FAST;
-                            } else if (!preferClimb && (heightDiff > WALL_HOP_RETRY_HEIGHT || pose.vy >= WALL_SLIDE_HOP_DOWNWARD_SPEED) && this.wallDecisionTimer <= 0) {
+                                this.wallDecisionTimer = BrainConstants.WALL_DECISION_COOLDOWN_FAST;
+                            } else if (!preferClimb && (heightDiff > BrainConstants.WALL_HOP_RETRY_HEIGHT || pose.vy >= BrainConstants.WALL_SLIDE_HOP_DOWNWARD_SPEED) && this.wallDecisionTimer <= 0) {
                                 requestJump(null, climbCeilingBlocked ? 'wall-slide-ceiling-hop' : 'wall-slide-retry-hop');
-                                this.wallDecisionTimer = WALL_DECISION_COOLDOWN_FAST;
+                                this.wallDecisionTimer = BrainConstants.WALL_DECISION_COOLDOWN_FAST;
                             }
                         } else if (pose.state === 'climb') {
                             // Continue jumping up if we stall vertically but still want height
@@ -3236,21 +3084,21 @@ export class Brain {
                                 if (climbCeilingBlocked) {
                                     input.up = false; // kick away from ceiling
                                     requestJump(null, 'climb-stall-ceiling-hop');
-                                    this.wallDecisionTimer = Math.max(0.2, WALL_DECISION_COOLDOWN);
+                                    this.wallDecisionTimer = Math.max(0.2, BrainConstants.WALL_DECISION_COOLDOWN);
                                 } else {
                                     input.up = true; // explicitly jump up the wall again
                                     requestJump(null, 'climb-continue-hop');
-                                    this.wallDecisionTimer = WALL_DECISION_COOLDOWN;
+                                    this.wallDecisionTimer = BrainConstants.WALL_DECISION_COOLDOWN;
                                 }
                             } else if (heightDiff > 70 && !climbCeilingBlocked) {
                                 input.up = true; // keep climbing
                             } else if (this.wallDecisionTimer <= 0) {
                                 input.up = false; // explicitly ensure we kick off to break out
                                 requestJump(null, 'climb-breakout-hop');
-                                this.wallDecisionTimer = WALL_DECISION_COOLDOWN;
+                                this.wallDecisionTimer = BrainConstants.WALL_DECISION_COOLDOWN;
                             }
-                        } else if (Math.abs(targetX - botCenterX) > WALL_TARGET_MIN_DX) {
-                            const wallBiasX = botCenterX + (wallDir * WALL_TARGET_BIAS_DIST);
+                        } else if (Math.abs(targetX - botCenterX) > BrainConstants.WALL_TARGET_MIN_DX) {
+                            const wallBiasX = botCenterX + (wallDir * BrainConstants.WALL_TARGET_BIAS_DIST);
                             navTargetX = (navTargetX + wallBiasX) / 2;
                         }
                     }
@@ -3260,12 +3108,12 @@ export class Brain {
                     const wallLaunchAllowed = this.navState === 'nav-ready';
                     if (!ticTacHandled && targetIsWallStep && this.targetPlatform && pose.grounded && wallLaunchAllowed && !input.down) {
                         const faceX = targetX > botCenterX
-                            ? this.targetPlatform.aabb.x1 - WALL_STEP_FACE_OFFSET
-                            : this.targetPlatform.aabb.x2 + WALL_STEP_FACE_OFFSET;
+                            ? this.targetPlatform.aabb.x1 - BrainConstants.WALL_STEP_FACE_OFFSET
+                            : this.targetPlatform.aabb.x2 + BrainConstants.WALL_STEP_FACE_OFFSET;
                         navTargetX = faceX;
                         const launchDir = faceX > botCenterX ? 1 : -1;
-                        const nearLaunch = Math.abs(faceX - botCenterX) <= WALL_STEP_LAUNCH_DIST;
-                        const carryingSpeed = pose.vx * launchDir >= WALL_STEP_LAUNCH_MIN_VX;
+                        const nearLaunch = Math.abs(faceX - botCenterX) <= BrainConstants.WALL_STEP_LAUNCH_DIST;
+                        const carryingSpeed = pose.vx * launchDir >= BrainConstants.WALL_STEP_LAUNCH_MIN_VX;
                         const headClear = !this.world.query({
                             x1: pose.x + 2,
                             y1: pose.y - 36,
@@ -3275,7 +3123,7 @@ export class Brain {
 
                         if (nearLaunch && carryingSpeed && headClear && this.wallDecisionTimer <= 0) {
                             requestJump(null, 'wall-step-launch');
-                            this.wallDecisionTimer = WALL_DECISION_COOLDOWN_FAST;
+                            this.wallDecisionTimer = BrainConstants.WALL_DECISION_COOLDOWN_FAST;
                         }
                     }
 
@@ -3291,9 +3139,9 @@ export class Brain {
                     if (!ticTacHandled) {
                         const nearAndLevel = pose.grounded && this.targetPlatform && Math.abs(moveDx) < 60 && Math.abs(heightDiff) < 40;
                         const speedDeadzoneBoost = pose.grounded ? Math.min(14, Math.abs(pose.vx) * 0.03) : 0;
-                        let deadzone = (nearAndLevel ? STEER_DEADZONE_NEAR : STEER_DEADZONE_BASE) + speedDeadzoneBoost;
-                        if (pose.state === 'slide') deadzone = Math.max(deadzone, STEER_DEADZONE_SLIDE);
-                        const stickyBand = deadzone + STEER_COMMIT_STICKY_EXTRA;
+                        let deadzone = (nearAndLevel ? BrainConstants.STEER_DEADZONE_NEAR : BrainConstants.STEER_DEADZONE_BASE) + speedDeadzoneBoost;
+                        if (pose.state === 'slide') deadzone = Math.max(deadzone, BrainConstants.STEER_DEADZONE_SLIDE);
+                        const stickyBand = deadzone + BrainConstants.STEER_COMMIT_STICKY_EXTRA;
                         debugSnapshot.deadzone = deadzone;
                         debugSnapshot.stickyBand = stickyBand;
                         debugSnapshot.shouldMoveHorizontally = shouldMoveHorizontally;
@@ -3363,13 +3211,13 @@ export class Brain {
                             const flippingNearCenter = this.moveCommitDir !== 0
                                 && moveDir !== this.moveCommitDir
                                 && this.moveCommitTimer > 0
-                                && Math.abs(moveDx) < STEER_COMMIT_FLIP_GUARD;
+                                && Math.abs(moveDx) < BrainConstants.STEER_COMMIT_FLIP_GUARD;
                             const enforceCommit = commitActive && !commitBlocked && moveDir !== this.moveCommitDir;
                             if (enforceCommit || flippingNearCenter) {
                                 moveDir = this.moveCommitDir;
                             } else if (moveDir !== this.moveCommitDir) {
                                 this.moveCommitDir = moveDir;
-                                let nextCommit = nearAndLevel ? STEER_COMMIT_HOLD_NEAR : STEER_COMMIT_HOLD_BASE;
+                                let nextCommit = nearAndLevel ? BrainConstants.STEER_COMMIT_HOLD_NEAR : BrainConstants.STEER_COMMIT_HOLD_BASE;
                                 if (this.panicLatchTimer > 0) {
                                     nextCommit = Math.max(nextCommit, 0.3);
                                 }
@@ -3424,9 +3272,9 @@ export class Brain {
                             targetX !== null &&
                             targetY !== null &&
                             this.approachPhase === 'direct' &&
-                            heightDiff > OVERHEAD_LOCK_MIN_HEIGHT &&
-                            heightDiff < OVERHEAD_LOCK_MAX_HEIGHT &&
-                            Math.abs(targetX - botCenterX) <= OVERHEAD_LOCK_MAX_DX;
+                            heightDiff > BrainConstants.OVERHEAD_LOCK_MIN_HEIGHT &&
+                            heightDiff < BrainConstants.OVERHEAD_LOCK_MAX_HEIGHT &&
+                            Math.abs(targetX - botCenterX) <= BrainConstants.OVERHEAD_LOCK_MAX_DX;
                         debugSnapshot.overheadAligned = overheadAligned;
                         if (overheadAligned) {
                             const verticalCeilingQuery = {
@@ -3492,7 +3340,7 @@ export class Brain {
                                         this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, reason, 9000);
                                         this.recordRegionFailure(pose, pose.groundedId, this.targetPlatform.id, reason, { ttlMs: 9000 });
                                     }
-                                    this.ceilingArcInvalidateTimer = CEILING_ARC_INVALIDATE_COOLDOWN;
+                                    this.ceilingArcInvalidateTimer = BrainConstants.CEILING_ARC_INVALIDATE_COOLDOWN;
                                     this.recordLog(
                                         'CEILING_ARC_BLOCK',
                                         pose,
@@ -3525,7 +3373,7 @@ export class Brain {
 
                                 if (!wallR || !wallL) {
                                     this.ceilingEscapeDir = escapeDir;
-                                    this.ceilingEscapeTimer = CEILING_ESCAPE_LATCH;
+                                    this.ceilingEscapeTimer = BrainConstants.CEILING_ESCAPE_LATCH;
                                     input.left = (escapeDir === -1);
                                     input.right = (escapeDir === 1);
                                     // If we're escaping, we definitely shouldn't be jumping yet
@@ -3926,7 +3774,7 @@ export class Brain {
                                         this.recordRegionFailure(pose, groundedCollider.id, this.targetPlatform.id, 'down-sealed', { ttlMs: 9000 });
                                     }
                                     this.reroute(pose, 'down-sealed');
-                                    this.downSealRerouteTimer = DOWN_SEAL_REROUTE_COOLDOWN;
+                                    this.downSealRerouteTimer = BrainConstants.DOWN_SEAL_REROUTE_COOLDOWN;
                                 }
 
                                 if (this.sealedDownIntentGrounds.has(groundedCollider.id)) {
@@ -3937,7 +3785,7 @@ export class Brain {
                                     debugSnapshot.dropDirection = 0;
                                     if (this.downSealRerouteTimer <= 0) {
                                         this.reroute(pose, 'down-sealed');
-                                        this.downSealRerouteTimer = DOWN_SEAL_REROUTE_COOLDOWN;
+                                        this.downSealRerouteTimer = BrainConstants.DOWN_SEAL_REROUTE_COOLDOWN;
                                     }
                                 } else {
                                     const edgePad = 6;
@@ -3999,14 +3847,14 @@ export class Brain {
                                             this.dropIntentStuckTimer = 0;
                                         }
 
-                                        const startedFalling = !pose.grounded || pose.vy >= EDGE_DROP_INTENT_FALL_VY;
+                                        const startedFalling = !pose.grounded || pose.vy >= BrainConstants.EDGE_DROP_INTENT_FALL_VY;
                                         if (startedFalling) {
                                             this.resetDropIntentTracking();
                                         } else {
                                             this.dropIntentStuckTimer += dt;
                                         }
 
-                                        if (!startedFalling && this.dropIntentStuckTimer > EDGE_DROP_INTENT_STUCK_WINDOW) {
+                                        if (!startedFalling && this.dropIntentStuckTimer > BrainConstants.EDGE_DROP_INTENT_STUCK_WINDOW) {
                                             this.recordLog(
                                                 'EDGE_DROP_INTENT_STUCK',
                                                 pose,
@@ -4032,7 +3880,7 @@ export class Brain {
                                     if (atEdge && dropBlocked) {
                                         if (this.progressStagnationTimer > 1.2 && this.wallDecisionTimer <= 0) {
                                             requestJump(null, 'edge-drop-wall-hop');
-                                            this.wallDecisionTimer = WALL_DECISION_COOLDOWN;
+                                            this.wallDecisionTimer = BrainConstants.WALL_DECISION_COOLDOWN;
                                         }
 
                                         // If persistently blocked even after jump attempts, invalidate the edge/target.
@@ -4076,7 +3924,7 @@ export class Brain {
                             }
 
                             // Air jumps: choose between double or triple based on target gap.
-                            if (!pose.grounded && pose.state !== 'wall-slide' && pose.jumps < MAX_TOTAL_JUMPS && targetX !== null) {
+                            if (!pose.grounded && pose.state !== 'wall-slide' && pose.jumps < BrainConstants.MAX_TOTAL_JUMPS && targetX !== null) {
                                 const dx = Math.abs(targetX - botCenterX);
                                 const descending = pose.vy > 50;
                                 const shouldDouble =
@@ -4240,25 +4088,25 @@ export class Brain {
 
     private applyBreadcrumbPopCost(pose: Pose, reason: string, rewoundToId: number) {
         const now = performance.now();
-        const tailTransitions = this.recentTransitions.slice(-BREADCRUMB_COST_LOOKBACK);
+        const tailTransitions = this.recentTransitions.slice(-BrainConstants.BREADCRUMB_COST_LOOKBACK);
         const penalties = new Map<number, number>();
 
         for (let i = tailTransitions.length - 1; i >= 0; i--) {
             const trace = tailTransitions[i];
             const recencyIndex = tailTransitions.length - 1 - i; // 0 = newest
             const decay = Math.max(0.35, 1 - recencyIndex * 0.18);
-            const base = Math.round((BREADCRUMB_COST_BASE + BREADCRUMB_COST_STEP * recencyIndex) * decay);
+            const base = Math.round((BrainConstants.BREADCRUMB_COST_BASE + BrainConstants.BREADCRUMB_COST_STEP * recencyIndex) * decay);
 
-            this.graph.invalidateEdge(trace.fromId, trace.toId, 'breadcrumb-pop-cost', BREADCRUMB_COST_EDGE_INVALID_MS);
+            this.graph.invalidateEdge(trace.fromId, trace.toId, 'breadcrumb-pop-cost', BrainConstants.BREADCRUMB_COST_EDGE_INVALID_MS);
             penalties.set(trace.toId, (penalties.get(trace.toId) || 0) + base);
             penalties.set(trace.fromId, (penalties.get(trace.fromId) || 0) + Math.round(base * 0.45));
         }
 
-        const targetTail = this.platformHistory.slice(-BREADCRUMB_COST_LOOKBACK);
+        const targetTail = this.platformHistory.slice(-BrainConstants.BREADCRUMB_COST_LOOKBACK);
         for (let i = targetTail.length - 1; i >= 0; i--) {
             const targetId = targetTail[i];
             const recencyIndex = targetTail.length - 1 - i;
-            const add = Math.round((BREADCRUMB_COST_BASE * 0.5 + BREADCRUMB_COST_STEP * recencyIndex) * 0.7);
+            const add = Math.round((BrainConstants.BREADCRUMB_COST_BASE * 0.5 + BrainConstants.BREADCRUMB_COST_STEP * recencyIndex) * 0.7);
             penalties.set(targetId, (penalties.get(targetId) || 0) + add);
         }
 
@@ -4267,11 +4115,11 @@ export class Brain {
         for (const [id, add] of penalties.entries()) {
             if (!this.world.colliders.has(id)) continue;
             const current = this.getBreadcrumbPenaltyForTarget(id, now);
-            const next = Math.min(BREADCRUMB_COST_MAX, current + add);
+            const next = Math.min(BrainConstants.BREADCRUMB_COST_MAX, current + add);
             this.breadcrumbTargetPenalty.set(id, {
                 value: next,
                 appliedAt: now,
-                expiresAt: now + BREADCRUMB_COST_TTL_MS
+                expiresAt: now + BrainConstants.BREADCRUMB_COST_TTL_MS
             });
             appliedCount++;
         }
@@ -4280,7 +4128,7 @@ export class Brain {
             this.recordLog(
                 'BREADCRUMB_COST',
                 pose,
-                `${reason}: penalized=${appliedCount} lookback=${tailTransitions.length} ttl=${Math.round(BREADCRUMB_COST_TTL_MS / 1000)}s`
+                `${reason}: penalized=${appliedCount} lookback=${tailTransitions.length} ttl=${Math.round(BrainConstants.BREADCRUMB_COST_TTL_MS / 1000)}s`
             );
         }
     }
@@ -4308,27 +4156,27 @@ export class Brain {
     private boostRecoveryPressure(reason: string, extraFloor: number = 0): void {
         if (this.manualMode) return;
         this.retryCount = Math.min(24, this.retryCount + 1);
-        const floor = ESCALATION_TIMER_FLOOR + extraFloor + (reason.includes('island') ? 0.2 : 0);
+        const floor = BrainConstants.ESCALATION_TIMER_FLOOR + extraFloor + (reason.includes('island') ? 0.2 : 0);
         this.progressStagnationTimer = Math.max(this.progressStagnationTimer, floor);
         this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, floor);
-        this.stallTimer = Math.max(this.stallTimer, LOOP_WARN_STALL * 0.75);
+        this.stallTimer = Math.max(this.stallTimer, BrainConstants.LOOP_WARN_STALL * 0.75);
     }
 
     private rememberWarpDestination(targetId: number): void {
         this.recentWarpDestinations.push(targetId);
-        if (this.recentWarpDestinations.length > RECENT_WARP_HISTORY) {
+        if (this.recentWarpDestinations.length > BrainConstants.RECENT_WARP_HISTORY) {
             this.recentWarpDestinations.shift();
         }
     }
 
-    private enterIslandMode(pose: Pose, reason: string, minLatchSec: number = ISLAND_MODE_LATCH_SEC): void {
+    private enterIslandMode(pose: Pose, reason: string, minLatchSec: number = BrainConstants.ISLAND_MODE_LATCH_SEC): void {
         const now = performance.now();
         const wasActive = this.islandModeActive;
         this.islandModeActive = true;
         this.islandModeUntil = Math.max(this.islandModeUntil, now + minLatchSec * 1000);
         this.islandModeGroundId = pose.groundedId ?? this.islandModeGroundId;
         this.islandTrapCount = Math.min(this.islandTrapCount + 1, 999);
-        this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, ISLAND_MODE_FREEZE_SEC);
+        this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, BrainConstants.ISLAND_MODE_FREEZE_SEC);
         this.boostRecoveryPressure(reason, 0.2);
 
         if (!wasActive) {
@@ -4401,8 +4249,8 @@ export class Brain {
         this.currentState = 'seek';
         this.navState = 'nav-ready';
         this.bestProgressDist = Infinity;
-        this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
-        this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
+        this.progressStagnationTimer = Math.max(this.progressStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
+        this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
         this.approachPhase = 'direct';
         this.approachX = null;
         this.moveCommitDir = 0;
@@ -4410,7 +4258,7 @@ export class Brain {
         this.dropEdgeX = null;
         this.dropGroundId = null;
         this.dropLockTimer = 0;
-        this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, this.islandModeActive ? ISLAND_MODE_FREEZE_SEC : 1.5);
+        this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, this.islandModeActive ? BrainConstants.ISLAND_MODE_FREEZE_SEC : 1.5);
         this.rememberWarpDestination(pick.id);
         this.recordLog(
             'LOOP_FALLBACK',
@@ -4479,9 +4327,9 @@ export class Brain {
         }
 
         const rawEdgeX = dropDir > 0 ? rightEdge : leftEdge;
-        const rawTargetX = rawEdgeX + dropDir * ISLAND_EDGE_ESCAPE_X_PAD;
+        const rawTargetX = rawEdgeX + dropDir * BrainConstants.ISLAND_EDGE_ESCAPE_X_PAD;
         const targetX = Math.max(20, Math.min(window.innerWidth - 20, rawTargetX));
-        const targetY = Math.max(30, Math.min(window.innerHeight - 30, ground.aabb.y1 + ISLAND_EDGE_ESCAPE_DROP_Y));
+        const targetY = Math.max(30, Math.min(window.innerHeight - 30, ground.aabb.y1 + BrainConstants.ISLAND_EDGE_ESCAPE_DROP_Y));
 
         this.clearTargetLock();
         this.targetPlatform = null;
@@ -4491,16 +4339,16 @@ export class Brain {
         this.currentState = 'seek';
         this.navState = 'nav-ready';
         this.bestProgressDist = Infinity;
-        this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
-        this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
+        this.progressStagnationTimer = Math.max(this.progressStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
+        this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
         this.approachPhase = 'direct';
         this.approachX = null;
         this.moveCommitDir = dropDir;
-        this.moveCommitTimer = Math.max(this.moveCommitTimer, ISLAND_EDGE_ESCAPE_COMMIT);
+        this.moveCommitTimer = Math.max(this.moveCommitTimer, BrainConstants.ISLAND_EDGE_ESCAPE_COMMIT);
         this.dropEdgeX = rawEdgeX;
         this.dropGroundId = ground.id;
         this.dropLockTimer = Math.max(this.dropLockTimer, 2.4);
-        this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, ISLAND_EDGE_ESCAPE_FREEZE);
+        this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, BrainConstants.ISLAND_EDGE_ESCAPE_FREEZE);
         this.boostRecoveryPressure(reason, 0.2);
 
         this.recordLog(
@@ -4546,8 +4394,8 @@ export class Brain {
             this.resetManeuverTracking();
             this.currentState = 'seek';
             this.bestProgressDist = Infinity;
-            this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
-            this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
+            this.progressStagnationTimer = Math.max(this.progressStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
+            this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
             this.approachPhase = 'direct';
             this.approachX = null;
             this.moveCommitDir = 0;
@@ -4570,7 +4418,7 @@ export class Brain {
 
         const strictlyFilteredGlobal = this.world.getAll().filter((c) => {
             if (c.kind !== 'rect' || !c.flags.solid) return false;
-            if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
+            if ((c.aabb.x2 - c.aabb.x1) < BrainConstants.MIN_PLATFORM_SIZE) return false;
             if (this.targetPlatform && c.id === this.targetPlatform.id) return false;
             if (pose.grounded && pose.groundedId === c.id) return false;
             if (this.recentWarpDestinations.includes(c.id)) return false;
@@ -4594,7 +4442,7 @@ export class Brain {
             }
 
             if (strictlyFilteredGlobal.length > 0 && this.targetSelector.tryPickCoordinateTarget(pose, strictlyFilteredGlobal, true, true)) {
-                this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, ISLAND_MODE_FREEZE_SEC);
+                this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, BrainConstants.ISLAND_MODE_FREEZE_SEC);
                 this.recordLog('LOOP_FALLBACK', pose, `sig=${signature} ${reason}: island-panic non-local coord`);
                 return;
             }
@@ -4617,8 +4465,8 @@ export class Brain {
                         this.currentState = 'seek';
                         this.navState = 'nav-align';
                         this.bestProgressDist = Infinity;
-                        this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
-                        this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
+                        this.progressStagnationTimer = Math.max(this.progressStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
+                        this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
                     }
                     return;
                 }
@@ -4633,7 +4481,7 @@ export class Brain {
         };
         let pool = this.world.query(searchAABB).filter((c) => {
             if (c.kind !== 'rect' || !c.flags.solid) return false;
-            if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
+            if ((c.aabb.x2 - c.aabb.x1) < BrainConstants.MIN_PLATFORM_SIZE) return false;
             if (this.targetPlatform && c.id === this.targetPlatform.id) return false;
             if (pose.grounded && pose.groundedId === c.id) return false;
             if (this.recentWarpDestinations.includes(c.id)) return false;
@@ -4644,7 +4492,7 @@ export class Brain {
         if (pool.length === 0) {
             pool = this.world.query(searchAABB).filter((c) => {
                 if (c.kind !== 'rect' || !c.flags.solid) return false;
-                if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
+                if ((c.aabb.x2 - c.aabb.x1) < BrainConstants.MIN_PLATFORM_SIZE) return false;
                 if (this.targetPlatform && c.id === this.targetPlatform.id) return false;
                 if (pose.grounded && pose.groundedId === c.id) return false;
                 if (startId !== null && this.isRegionTargetBlacklisted(startId, c.id)) return false;
@@ -4652,7 +4500,7 @@ export class Brain {
             });
         }
 
-        const idleTime = LOOP_FALLBACK_IDLE_MIN + Math.random() * (LOOP_FALLBACK_IDLE_MAX - LOOP_FALLBACK_IDLE_MIN);
+        const idleTime = BrainConstants.LOOP_FALLBACK_IDLE_MIN + Math.random() * (BrainConstants.LOOP_FALLBACK_IDLE_MAX - BrainConstants.LOOP_FALLBACK_IDLE_MIN);
         if (pool.length > 0 && pose.grounded && startId !== null && this.graph.nodes.has(startId)) {
             const reachablePool: { collider: Collider; pathCost: number; score: number }[] = [];
             for (const c of pool) {
@@ -4693,7 +4541,7 @@ export class Brain {
 
         const relaxedGlobal = this.world.getAll().filter((c) => {
             if (c.kind !== 'rect' || !c.flags.solid) return false;
-            if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
+            if ((c.aabb.x2 - c.aabb.x1) < BrainConstants.MIN_PLATFORM_SIZE) return false;
             if (pose.grounded && pose.groundedId === c.id) return false;
             return true;
         });
@@ -4716,18 +4564,18 @@ export class Brain {
 
         const now = performance.now();
         for (const [sig, hits] of this.loopSignatureHits.entries()) {
-            const fresh = hits.filter((ts) => now - ts <= LOOP_SIGNATURE_WINDOW_MS);
+            const fresh = hits.filter((ts) => now - ts <= BrainConstants.LOOP_SIGNATURE_WINDOW_MS);
             if (fresh.length === 0) this.loopSignatureHits.delete(sig);
             else if (fresh.length !== hits.length) this.loopSignatureHits.set(sig, fresh);
         }
         const signature = this.buildLoopSignature(pose, failReason);
         const prior = this.loopSignatureHits.get(signature) ?? [];
-        const recent = prior.filter((ts) => now - ts <= LOOP_SIGNATURE_WINDOW_MS);
+        const recent = prior.filter((ts) => now - ts <= BrainConstants.LOOP_SIGNATURE_WINDOW_MS);
         recent.push(now);
         this.loopSignatureHits.set(signature, recent);
 
-        this.recordLog('LOOP_SIG', pose, `${signature} count=${recent.length}/${LOOP_SIGNATURE_ESCALATE_COUNT}`);
-        if (recent.length < LOOP_SIGNATURE_ESCALATE_COUNT) return false;
+        this.recordLog('LOOP_SIG', pose, `${signature} count=${recent.length}/${BrainConstants.LOOP_SIGNATURE_ESCALATE_COUNT}`);
+        if (recent.length < BrainConstants.LOOP_SIGNATURE_ESCALATE_COUNT) return false;
 
         this.triggerLoopHardFallback(pose, signature, failReason);
         this.loopSignatureHits.set(signature, [now]);
@@ -4745,11 +4593,11 @@ export class Brain {
         let bestGauge: number | null = null;
         let bestScore = Number.POSITIVE_INFINITY;
 
-        for (let t = GAUGE_TIME_MIN; t <= GAUGE_TIME_MAX + 1e-6; t += GAUGE_TIME_STEP) {
-            const requiredJumpSpeed = (heightDiff / t) + (0.5 * PLANNER_GRAVITY * t);
-            const gauge = requiredJumpSpeed / PLANNER_FULL_JUMP_SPEED;
+        for (let t = BrainConstants.GAUGE_TIME_MIN; t <= BrainConstants.GAUGE_TIME_MAX + 1e-6; t += BrainConstants.GAUGE_TIME_STEP) {
+            const requiredJumpSpeed = (heightDiff / t) + (0.5 * BrainConstants.PLANNER_GRAVITY * t);
+            const gauge = requiredJumpSpeed / BrainConstants.PLANNER_FULL_JUMP_SPEED;
 
-            if (gauge < GAUGED_JUMP_MIN || gauge > GAUGED_JUMP_MAX) continue;
+            if (gauge < BrainConstants.GAUGED_JUMP_MIN || gauge > BrainConstants.GAUGED_JUMP_MAX) continue;
 
             const predictedDx = expectedAirSpeed * t;
             const xError = Math.abs(predictedDx - dxAbs);
@@ -4768,7 +4616,7 @@ export class Brain {
         const allowedMismatch = Math.max(35, dxAbs * 0.8);
         if (bestScore > allowedMismatch + 12) return null;
 
-        return Math.max(GAUGED_JUMP_MIN, Math.min(GAUGED_JUMP_MAX, bestGauge));
+        return Math.max(BrainConstants.GAUGED_JUMP_MIN, Math.min(BrainConstants.GAUGED_JUMP_MAX, bestGauge));
     }
 
 
@@ -4780,7 +4628,7 @@ export class Brain {
         input: BrainInput
     ): boolean {
         this.seekDiagTimer += dt;
-        if (this.seekDiagTimer >= SEEK_DIAG_INTERVAL) {
+        if (this.seekDiagTimer >= BrainConstants.SEEK_DIAG_INTERVAL) {
             this.seekDiagTimer = 0;
             this.recordLog(
                 'SEEK_DIAG',
@@ -4819,8 +4667,8 @@ export class Brain {
 
         const loopWarning =
             this.loopCooldown <= 0 &&
-            this.stallTimer > LOOP_WARN_STALL &&
-            this.facingFlipCount >= LOOP_WARN_FLIPS;
+            this.stallTimer > BrainConstants.LOOP_WARN_STALL &&
+            this.facingFlipCount >= BrainConstants.LOOP_WARN_FLIPS;
         if (loopWarning && !this.loopWarned) {
             const commitWindow = this.getPingPongCommitWindow();
             const preferredCommitDir: -1 | 1 = input.right ? 1 : (input.left ? -1 : (moveDx >= 0 ? 1 : -1));
@@ -4849,7 +4697,7 @@ export class Brain {
 
         const loopDetected =
             this.loopCooldown <= 0 &&
-            ((this.stallTimer > LOOP_DETECT_STALL && this.facingFlipCount >= LOOP_DETECT_FLIPS) ||
+            ((this.stallTimer > BrainConstants.LOOP_DETECT_STALL && this.facingFlipCount >= BrainConstants.LOOP_DETECT_FLIPS) ||
                 this.facingFlipCount > 12);
         if (loopDetected) {
             this.lockFailCount++;
@@ -4885,7 +4733,7 @@ export class Brain {
             if (localEdge) {
                 this.recordLog('LOCAL_SOLVE', pose, `loop rescue -> ID${localEdge.toId}`);
                 this.executeLocalManeuver(pose, localEdge);
-                this.loopCooldown = LOOP_RECOVERY_COOLDOWN;
+                this.loopCooldown = BrainConstants.LOOP_RECOVERY_COOLDOWN;
                 this.stallTimer = 0;
                 this.facingFlipCount = 0;
                 this.loopWarned = false;
@@ -4907,7 +4755,7 @@ export class Brain {
                 this.graph.invalidateEdge(pose.groundedId, this.targetPlatform.id, 'ping-pong', 8000);
                 this.recordRegionFailure(pose, pose.groundedId, this.targetPlatform.id, 'GLITCH_LOOP', { ttlMs: 9000 });
             }
-            this.loopCooldown = LOOP_RECOVERY_COOLDOWN;
+            this.loopCooldown = BrainConstants.LOOP_RECOVERY_COOLDOWN;
             this.stallTimer = 0;
             this.facingFlipCount = 0;
             this.loopWarned = false;
@@ -4949,7 +4797,7 @@ export class Brain {
             }
             const strictPool = this.world.getAll().filter((c) => {
                 if (c.kind !== 'rect' || !c.flags.solid) return false;
-                if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
+                if ((c.aabb.x2 - c.aabb.x1) < BrainConstants.MIN_PLATFORM_SIZE) return false;
                 if (this.recentWarpDestinations.includes(c.id)) return false;
                 return true;
             });
@@ -4958,7 +4806,7 @@ export class Brain {
             }
         }
 
-        const viewAABB: AABB = { x1: pose.x - VIEW_DIST, y1: 0, x2: pose.x + VIEW_DIST, y2: window.innerHeight };
+        const viewAABB: AABB = { x1: pose.x - BrainConstants.VIEW_DIST, y1: 0, x2: pose.x + BrainConstants.VIEW_DIST, y2: window.innerHeight };
         const candidates = this.world.query(viewAABB);
         const botAABB: AABB = {
             x1: pose.x,
@@ -4975,7 +4823,7 @@ export class Brain {
         // Filter to valid platforms (wide enough, not currently standing on)
         const valid = candidates.filter(c => {
             const w = c.aabb.x2 - c.aabb.x1;
-            if (w < MIN_PLATFORM_SIZE) return false;
+            if (w < BrainConstants.MIN_PLATFORM_SIZE) return false;
             if (overlapsBotBody(c)) return false;
             // Don't target the platform we're standing on
             if (pose.grounded && (pose.groundedId === c.id || (pose.x + pose.width > c.aabb.x1 - 10 && pose.x < c.aabb.x2 + 10 && Math.abs(pose.y + pose.height - c.aabb.y1) < 20))) {
@@ -5009,7 +4857,7 @@ export class Brain {
 
         const validRelaxed = candidates.filter(c => {
             const w = c.aabb.x2 - c.aabb.x1;
-            if (w < MIN_PLATFORM_SIZE) return false;
+            if (w < BrainConstants.MIN_PLATFORM_SIZE) return false;
             if (pose.grounded && (pose.groundedId === c.id || (pose.x + pose.width > c.aabb.x1 - 10 && pose.x < c.aabb.x2 + 10 && Math.abs(pose.y + pose.height - c.aabb.y1) < 20))) {
                 return false;
             }
@@ -5040,7 +4888,7 @@ export class Brain {
             ? valid
             : candidates.filter(c => {
                 const w = c.aabb.x2 - c.aabb.x1;
-                if (w < MIN_PLATFORM_SIZE) return false;
+                if (w < BrainConstants.MIN_PLATFORM_SIZE) return false;
                 if (overlapsBotBody(c)) return false;
                 if (pose.grounded && pose.groundedId === c.id) return false;
                 return true;
@@ -5114,12 +4962,12 @@ export class Brain {
             this.recordLog('RELAX_RECENCY', pose, 'no alternative targets, allowing recent/unreachable');
         }
 
-        if (ENABLE_COORDINATE_TARGETS) {
+        if (BrainConstants.ENABLE_COORDINATE_TARGETS) {
             const coordPickChance = Math.min(
                 0.72,
-                COORD_TARGET_BASE_PROB
-                + (repeatPressure ? COORD_TARGET_REPEAT_BONUS : 0)
-                + (preferFar ? COORD_TARGET_FAR_BONUS : 0)
+                BrainConstants.COORD_TARGET_BASE_PROB
+                + (repeatPressure ? BrainConstants.COORD_TARGET_REPEAT_BONUS : 0)
+                + (preferFar ? BrainConstants.COORD_TARGET_FAR_BONUS : 0)
             );
             if (Math.random() < coordPickChance) {
                 const coordPool = recencyPool.length > 0 ? recencyPool : pool;
@@ -5249,7 +5097,7 @@ export class Brain {
             const farScored = scored.filter(s => {
                 const cx = (s.collider.aabb.x1 + s.collider.aabb.x2) / 2;
                 const dist = Math.hypot(cx - botCx, s.collider.aabb.y1 - botFeetY);
-                return dist >= FAR_TARGET_MIN_DIST;
+                return dist >= BrainConstants.FAR_TARGET_MIN_DIST;
             });
             if (farScored.length >= 2) {
                 weightedPool = farScored;
@@ -5266,7 +5114,7 @@ export class Brain {
 
         const secondScore = top.length > 1 ? top[1].score : -Infinity;
         const dominantGap = top[0].score - secondScore;
-        if (!(top.length > 1 && dominantGap >= TARGET_PICK_DOMINANCE_GAP)) {
+        if (!(top.length > 1 && dominantGap >= BrainConstants.TARGET_PICK_DOMINANCE_GAP)) {
             const maxScore = top[0].score;
             const weights = top.map(s => Math.exp((s.score - maxScore) / T));
             const totalWeight = weights.reduce((a, b) => a + b, 0);
@@ -5364,8 +5212,8 @@ export class Brain {
                     this.setStationaryPlatformTarget(c, pose.x + pose.width / 2, true);
                     this.currentState = 'seek';
                     this.bestProgressDist = Infinity;
-                    this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
-                    this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
+                    this.progressStagnationTimer = Math.max(this.progressStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
+                    this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
                     this.approachPhase = 'direct';
                     this.approachX = null;
                     this.navState = 'nav-align';
@@ -5388,8 +5236,8 @@ export class Brain {
                     this.setStationaryPlatformTarget(waypoint, pose.x + pose.width / 2, true);
                     this.currentState = 'seek';
                     this.bestProgressDist = Infinity;
-                    this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
-                    this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
+                    this.progressStagnationTimer = Math.max(this.progressStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
+                    this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
                     this.approachPhase = 'direct';
                     this.approachX = null;
                     this.navState = 'nav-align';
@@ -5414,8 +5262,8 @@ export class Brain {
     private setSubTargetWaypoint(pose: Pose, waypoint: Collider, locked: Collider, reason: string, source: string) {
         this.setStationaryPlatformTarget(waypoint, pose.x + pose.width / 2, true);
         this.bestProgressDist = Infinity;
-        this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
-        this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
+        this.progressStagnationTimer = Math.max(this.progressStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
+        this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
         this.approachPhase = 'direct';
         this.approachX = null;
         this.moveCommitDir = 0;
@@ -5470,7 +5318,7 @@ export class Brain {
         const nearby = this.world.query(searchAABB).filter(c => {
             if (c.kind !== 'rect' || !c.flags.solid) return false;
             if (c.id === locked.id) return false;
-            if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
+            if ((c.aabb.x2 - c.aabb.x1) < BrainConstants.MIN_PLATFORM_SIZE) return false;
             if (pose.grounded && pose.groundedId === c.id) return false;
             return true;
         });
@@ -5535,8 +5383,8 @@ export class Brain {
                     this.currentState = 'seek';
                     this.navState = 'nav-align';
                     this.bestProgressDist = Infinity;
-                    this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
-                    this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
+                    this.progressStagnationTimer = Math.max(this.progressStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
+                    this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
                 }
                 return;
             }
@@ -5570,7 +5418,7 @@ export class Brain {
             if (pose.grounded && pose.groundedId === c.id) return false;
             if (this.recentWarpDestinations.includes(c.id)) return false;
             if (startId !== null && this.isRegionTargetBlacklisted(startId, c.id)) return false;
-            return (c.aabb.x2 - c.aabb.x1) >= MIN_PLATFORM_SIZE && c.aabb.y1 < pose.y + pose.height && c.aabb.y1 > ty - 30;
+            return (c.aabb.x2 - c.aabb.x1) >= BrainConstants.MIN_PLATFORM_SIZE && c.aabb.y1 < pose.y + pose.height && c.aabb.y1 > ty - 30;
         });
         const blockedRecent = this.targetSelector.getRecentBlockedTargetIds(pose.groundedId);
         const reroutePool = blockedRecent.size > 0
@@ -5617,8 +5465,8 @@ export class Brain {
         if (pick) {
             this.setStationaryPlatformTarget(pick, pose.x + pose.width / 2, true);
             this.bestProgressDist = Infinity;
-            this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
-            this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
+            this.progressStagnationTimer = Math.max(this.progressStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
+            this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
             this.approachPhase = 'direct';
             this.approachX = null;
             this.moveCommitDir = 0;
@@ -5655,8 +5503,8 @@ export class Brain {
                 }
                 this.setStationaryPlatformTarget(locked, pose.x + pose.width / 2, true);
                 this.bestProgressDist = Infinity;
-                this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
-                this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
+                this.progressStagnationTimer = Math.max(this.progressStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
+                this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
                 this.noteWaypointSwitch(performance.now());
                 this.recordLog('REROUTE_LOCK', pose, `${reason}: direct lock ID${locked.id}`);
             } else {
@@ -5666,8 +5514,8 @@ export class Brain {
                     this.currentState = 'seek';
                     this.navState = 'nav-ready';
                     this.bestProgressDist = Infinity;
-                    this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
-                    this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
+                    this.progressStagnationTimer = Math.max(this.progressStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
+                    this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
                     this.recordLog('REROUTE_KEEP_COORD', pose, `${reason}: keeping coordinate target (freeze=${this.targetSelectFreezeTimer.toFixed(1)}s)`);
                 } else {
                     this.targetPlatform = null;
@@ -5679,8 +5527,8 @@ export class Brain {
                     this.patienceTimer = 0;
                     this.resetManeuverTracking();
                     this.bestProgressDist = Infinity;
-                    this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
-                    this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
+                    this.progressStagnationTimer = Math.max(this.progressStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
+                    this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
                     this.recordLog('REROUTE_BLIND', pose, `${reason}: no platform lock, reselection`);
                     this.pickNewTarget(pose);
                 }
@@ -5786,13 +5634,13 @@ export class Brain {
                     const isSwitching = this.targetPlatform?.id !== wpCollider.id;
                     const currentIsWaypoint = !!this.targetPlatform && this.targetPlatform.id !== this.lockedTargetId;
                     if (isSwitching && currentIsWaypoint && this.targetPlatform && this.graph.nodes.has(this.targetPlatform.id)) {
-                        const holdActive = now - this.lastWaypointSwitchTime < WAYPOINT_SWITCH_HOLD_MS;
+                        const holdActive = now - this.lastWaypointSwitchTime < BrainConstants.WAYPOINT_SWITCH_HOLD_MS;
                         if (holdActive) {
                             const currentCost = this.estimatePathCost(this.targetPlatform.id, this.lockedTargetId, pose);
                             const proposedCost = this.estimatePathCost(wpCollider.id, this.lockedTargetId, pose);
                             const switchPenalty = this.getWaypointSwitchPenalty(now);
                             if (Number.isFinite(currentCost) && Number.isFinite(proposedCost)) {
-                                const requiredGain = WAYPOINT_SWITCH_MARGIN + switchPenalty;
+                                const requiredGain = BrainConstants.WAYPOINT_SWITCH_MARGIN + switchPenalty;
                                 if (currentCost <= proposedCost + requiredGain) {
                                     this.setStationaryPlatformTarget(this.targetPlatform, pose.x + pose.width / 2);
                                     return;
@@ -5807,7 +5655,7 @@ export class Brain {
                         this.bestProgressDist = Infinity;
                         this.progressStagnationTimer = 0;
                         this.fsmStagnationTimer = 0;
-                        this.waypointStickyUntil = now + WAYPOINT_STICKY_MS;
+                        this.waypointStickyUntil = now + BrainConstants.WAYPOINT_STICKY_MS;
                         this.waypointOriginId = startId;
                         this.noteWaypointSwitch(now);
                     } else {
@@ -5829,7 +5677,7 @@ export class Brain {
             if (!directEdge) {
                 this.recordLog('PLAN_UNREACHABLE', pose, `ID${startId} -> ID${locked.id} no feasible maneuver`);
                 const hits = this.recordRegionFailure(pose, startId, locked.id, 'no-feasible-edge', { ttlMs: 8500 });
-                if (hits >= REGION_FAILURE_SIGNATURE_ESCALATE) {
+                if (hits >= BrainConstants.REGION_FAILURE_SIGNATURE_ESCALATE) {
                     this.enterIslandMode(pose, 'path-unreachable-repeat');
                 }
                 this.reroute(pose, 'path-unreachable');
@@ -5842,8 +5690,8 @@ export class Brain {
         if (this.targetPlatform?.id !== locked.id) {
             this.setStationaryPlatformTarget(locked, pose.x + pose.width / 2, true);
             this.bestProgressDist = Infinity;
-            this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
-            this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
+            this.progressStagnationTimer = Math.max(this.progressStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
+            this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, BrainConstants.ESCALATION_TIMER_FLOOR);
             this.noteWaypointSwitch(now);
         }
         this.waypointStickyUntil = 0;
