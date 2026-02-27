@@ -2526,6 +2526,37 @@ export class Brain {
                         this.patienceTimer = 0;
                         this.recordLog('NAV_READY_COORD', pose, `target=(${Math.round(targetX)},${Math.round(targetY ?? 0)})`);
                     }
+
+                    // === Island Escape Jump Logic ===
+                    // When chasing a coordinate target with no graph edge,
+                    // the bot must jump proactively to escape the current platform.
+                    if (pose.grounded && targetY !== null && heightDiff > 20 && pose.groundedId !== null) {
+                        const moveDir = targetX > botCenterX ? 1 : -1;
+                        // Check if there's a wall ahead that the bot could wall-jump off of
+                        const wallScanDist = 80;
+                        const wallProbe: AABB = {
+                            x1: moveDir > 0 ? pose.x + pose.width : pose.x - wallScanDist,
+                            y1: pose.y - 20,
+                            x2: moveDir > 0 ? pose.x + pose.width + wallScanDist : pose.x,
+                            y2: pose.y + pose.height - 4
+                        };
+                        const nearWall = this.world.query(wallProbe).some(c =>
+                            c.kind === 'rect' && c.flags.solid && !c.flags.oneWay
+                            && (c.aabb.y2 - c.aabb.y1) >= TIC_TAC_MIN_HEIGHT
+                        );
+
+                        // Also check if the bot is near the edge of its current platform
+                        const currentFloor = this.world.colliders.get(pose.groundedId);
+                        const nearEdge = currentFloor ? (
+                            (moveDir > 0 && botCenterX > currentFloor.aabb.x2 - 40) ||
+                            (moveDir < 0 && botCenterX < currentFloor.aabb.x1 + 40)
+                        ) : false;
+
+                        if ((nearWall || nearEdge) && this.jumpCooldown <= 0) {
+                            requestJump(null, nearWall ? 'island-wall-approach' : 'island-edge-hop');
+                            this.recordLog('ISLAND_JUMP', pose, `${nearWall ? 'wall-approach' : 'edge-hop'} dir=${moveDir > 0 ? 'R' : 'L'} hdiff=${Math.round(heightDiff)}`);
+                        }
+                    }
                 }
 
                 if (this.navState === 'nav-approach') {
@@ -3010,7 +3041,10 @@ export class Brain {
                             this.moveCommitDir = 0;
                         }
 
-                        if (this.panicLatchTimer > 0 && pose.grounded && pose.groundedId !== null) {
+                        if (this.panicLatchTimer > 0 && pose.grounded && pose.groundedId !== null && this.targetPlatform) {
+                            // Only freeze movement when using graph-based platform navigation.
+                            // When chasing a coordinate target (targetPlatform === null), the bot
+                            // MUST keep walking to escape the island.
                             const currentNode = this.graph.nodes.get(pose.groundedId);
                             const hasExits = currentNode && currentNode.edges.some(e => e.invalidUntil <= performance.now());
                             if (!hasExits) {
@@ -3995,7 +4029,7 @@ export class Brain {
                 this.autoTargetY = pick.aabb.y1;
                 this.resetManeuverTracking();
                 this.currentState = 'seek';
-                this.navState = 'nav-align';
+                this.navState = 'nav-ready';
                 this.bestProgressDist = Infinity;
                 this.progressStagnationTimer = 0;
                 this.fsmStagnationTimer = 0;
@@ -4385,7 +4419,7 @@ export class Brain {
             this.dropEdgeX = null;
             this.dropGroundId = null;
             this.dropLockTimer = 0;
-            this.navState = 'nav-align';
+            this.navState = 'nav-ready';
             this.takeoffZone = null;
             this.patienceTimer = 0;
             this.breadcrumbStack = [];
@@ -4746,15 +4780,15 @@ export class Brain {
             if (validEdges.length === 0) {
                 if (allEdges.length > 0) {
                     // Edges exist but ALL are temporarily invalidated.
-                    // This means the bot tried every exit and they all failed within the backoff window.
-                    // Force-clear invalidations so the bot can attempt them again with fresh state.
-                    // This breaks the island-panic → coordinate-target → fail → repick loop.
-                    for (const e of allEdges) {
-                        e.invalidUntil = 0;
-                        e.failureReason = null;
-                    }
-                    this.recordLog('ISLAND_EDGE_CLEAR', pose, `force-cleared ${allEdges.length} invalidated edges from ID${startId}`);
-                    // Fall through to normal scoring with fresh edges
+                    // Instead of force-clearing ALL (which causes immediate re-failure for
+                    // physically impossible edges), only clear the OLDEST invalidation
+                    // to give one edge a second chance while preserving the rest.
+                    const oldest = allEdges.reduce((best, e) =>
+                        e.invalidUntil < best.invalidUntil ? e : best, allEdges[0]);
+                    oldest.invalidUntil = 0;
+                    oldest.failureReason = null;
+                    this.recordLog('ISLAND_EDGE_CLEAR', pose, `cleared oldest edge ${oldest.maneuverId} from ID${startId} (${allEdges.length} total)`);
+                    // Fall through to normal scoring with one fresh edge
                 } else {
                     // Truly no edges — this node has no discovered maneuvers at all.
                     // This is a real island (isolated platform).
@@ -4925,6 +4959,8 @@ export class Brain {
         this.navState = 'nav-align';
         this.takeoffZone = null;
         this.patienceTimer = 0;
+        this.navSlipCount = 0;
+        this.navSlipTimer = 0;
         const topSummary = scored.slice(0, 3).map(s => this.describeCandidateForLog(pose, s)).join(' || ');
         const nearest = scoringPool.reduce((best, c) => {
             const cx = (c.aabb.x1 + c.aabb.x2) / 2;
@@ -5256,19 +5292,30 @@ export class Brain {
                 this.noteWaypointSwitch(performance.now());
                 this.recordLog('REROUTE_LOCK', pose, `${reason}: direct lock ID${locked.id}`);
             } else {
-                this.targetPlatform = null;
-                this.targetX = null;
-                this.autoTargetY = null;
-                this.currentState = 'idle';
-                this.navState = 'nav-align';
-                this.takeoffZone = null;
-                this.patienceTimer = 0;
-                this.resetManeuverTracking();
-                this.bestProgressDist = Infinity;
-                this.progressStagnationTimer = 0;
-                this.fsmStagnationTimer = 0;
-                this.recordLog('REROUTE_BLIND', pose, `${reason}: no platform lock, reselection`);
-                this.pickNewTarget(pose);
+                // No locked target. If we have an active coordinate escape target
+                // with a freeze timer, re-enter seek with it instead of re-picking.
+                if (this.targetSelectFreezeTimer > 0 && this.targetX !== null && this.autoTargetY !== null) {
+                    this.currentState = 'seek';
+                    this.navState = 'nav-ready';
+                    this.bestProgressDist = Infinity;
+                    this.progressStagnationTimer = 0;
+                    this.fsmStagnationTimer = 0;
+                    this.recordLog('REROUTE_KEEP_COORD', pose, `${reason}: keeping coordinate target (freeze=${this.targetSelectFreezeTimer.toFixed(1)}s)`);
+                } else {
+                    this.targetPlatform = null;
+                    this.targetX = null;
+                    this.autoTargetY = null;
+                    this.currentState = 'idle';
+                    this.navState = 'nav-align';
+                    this.takeoffZone = null;
+                    this.patienceTimer = 0;
+                    this.resetManeuverTracking();
+                    this.bestProgressDist = Infinity;
+                    this.progressStagnationTimer = 0;
+                    this.fsmStagnationTimer = 0;
+                    this.recordLog('REROUTE_BLIND', pose, `${reason}: no platform lock, reselection`);
+                    this.pickNewTarget(pose);
+                }
             }
             this.moveCommitDir = 0;
             this.moveCommitTimer = 0;
