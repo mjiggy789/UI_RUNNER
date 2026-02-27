@@ -2,6 +2,7 @@ import { Pose } from './controller';
 import { World } from './world';
 import { LocalSolver } from './local-solver';
 import { DetourPlanner } from './detour-planner';
+import { TargetSelector } from './target-selector';
 import type { WorldChecksum } from './world-checksum';
 import { NavGraph, NavEdge, PlannerContext, NavPathResult } from './planner';
 import { Collider, AABB } from '@parkour-bot/shared';
@@ -241,7 +242,7 @@ type BreadcrumbPenaltyState = {
     expiresAt: number;
 };
 
-type RegionBlacklistEntry = {
+export type RegionBlacklistEntry = {
     targetId: number | null;
     expiresAt: number;
     reason: string;
@@ -423,14 +424,15 @@ export class Brain {
     lastCoordinateFallbackTime: number = 0;
     localSolver: LocalSolver;
     detourPlanner: DetourPlanner;
+    targetSelector: TargetSelector;
     isDetourActive: boolean = false;
     panicLatchTimer: number = 0;
     islandModeActive: boolean = false;
     islandModeUntil: number = 0;
     islandTrapCount: number = 0;
     islandModeGroundId: number | null = null;
-    private recentUnreachable: Map<number, { targetId: number; time: number }[]> = new Map();
-    private regionBlacklist: Map<number, Map<string, RegionBlacklistEntry>> = new Map();
+    public recentUnreachable: Map<number, { targetId: number; time: number }[]> = new Map();
+    public regionBlacklist: Map<number, Map<string, RegionBlacklistEntry>> = new Map();
     private regionFailureSignatures: Map<string, { count: number; expiresAt: number }> = new Map();
     private corridorFailureMemory: Map<string, number> = new Map();
     private ticTacCooldowns: Map<string, number> = new Map();
@@ -532,6 +534,7 @@ export class Brain {
         this.graph = new NavGraph(world);
         this.localSolver = new LocalSolver(world, this.graph);
         this.detourPlanner = new DetourPlanner(world, this.graph, this.localSolver);
+        this.targetSelector = new TargetSelector(this);
         this.worldRevisionSeen = world.getRevision();
         this.worldChecksumSeen = world.getChecksum();
         this.resetWorldChecksumDriftTracking();
@@ -1015,7 +1018,7 @@ export class Brain {
         return startPick.id !== -1 ? startPick.id : null;
     }
 
-    private findPathWithContext(
+    public findPathWithContext(
         startId: number,
         targetId: number,
         pose: Pose,
@@ -1378,7 +1381,7 @@ export class Brain {
             : `edge:${fromId}->${toId}`;
     }
 
-    private pruneRegionBlacklist(now: number = performance.now()) {
+    public pruneRegionBlacklist(now: number = performance.now()) {
         for (const [groundedId, entries] of this.regionBlacklist.entries()) {
             for (const [key, entry] of entries.entries()) {
                 if (entry.expiresAt <= now) {
@@ -1525,7 +1528,7 @@ export class Brain {
         return hits;
     }
 
-    private isRegionTargetBlacklisted(groundedId: number, targetId: number): boolean {
+    public isRegionTargetBlacklisted(groundedId: number, targetId: number): boolean {
         this.pruneRegionBlacklist();
         const entries = this.regionBlacklist.get(groundedId);
         if (!entries) return false;
@@ -1533,7 +1536,7 @@ export class Brain {
         return this.isTargetUnreachable(groundedId, targetId);
     }
 
-    private getCorridorFailurePenalty(fromId: number, toId: number): number {
+    public getCorridorFailurePenalty(fromId: number, toId: number): number {
         this.pruneCorridorFailureMemory();
         const key = `${fromId}->${toId}`;
         const expiresAt = this.corridorFailureMemory.get(key);
@@ -2683,7 +2686,7 @@ export class Brain {
                     && this.lockedTargetId !== null
                     && this.targetPlatform.id === this.lockedTargetId
                     && heightDiff > MAX_SINGLE_HOP) {
-                    const waypoint = this.findWaypointBelow(pose, this.targetPlatform);
+            const waypoint = this.targetSelector.findWaypointBelow(pose, this.targetPlatform);
                     if (waypoint) {
                         this.recordLog('WAYPOINT', pose, `hop via ID${waypoint.id} -> lock ID${this.lockedTargetId} (hdiff ${Math.round(heightDiff)} > ${MAX_SINGLE_HOP})`);
                         this.targetPlatform = waypoint;
@@ -4223,7 +4226,7 @@ export class Brain {
         return input;
     }
 
-    private getBreadcrumbPenaltyForTarget(targetId: number, now: number): number {
+    public getBreadcrumbPenaltyForTarget(targetId: number, now: number): number {
         const state = this.breadcrumbTargetPenalty.get(targetId);
         if (!state) return 0;
         if (now >= state.expiresAt) {
@@ -4381,122 +4384,6 @@ export class Brain {
         }));
     }
 
-    private getGraphComponents(): { idByNode: Map<number, number>; sizeByComponent: Map<number, number> } {
-        const idByNode = new Map<number, number>();
-        const sizeByComponent = new Map<number, number>();
-        const adjacency = new Map<number, Set<number>>();
-
-        for (const [nodeId, node] of this.graph.nodes.entries()) {
-            if (!adjacency.has(nodeId)) adjacency.set(nodeId, new Set<number>());
-            for (const edge of node.edges) {
-                if (!adjacency.has(edge.toId)) adjacency.set(edge.toId, new Set<number>());
-                adjacency.get(nodeId)!.add(edge.toId);
-                adjacency.get(edge.toId)!.add(nodeId);
-            }
-        }
-
-        let componentId = 0;
-        for (const nodeId of adjacency.keys()) {
-            if (idByNode.has(nodeId)) continue;
-            const queue: number[] = [nodeId];
-            idByNode.set(nodeId, componentId);
-            let size = 0;
-            while (queue.length > 0) {
-                const current = queue.shift();
-                if (current === undefined) break;
-                size++;
-                const neighbors = adjacency.get(current);
-                if (!neighbors) continue;
-                for (const next of neighbors) {
-                    if (idByNode.has(next)) continue;
-                    idByNode.set(next, componentId);
-                    queue.push(next);
-                }
-            }
-            sizeByComponent.set(componentId, size);
-            componentId++;
-        }
-
-        return { idByNode, sizeByComponent };
-    }
-
-    private findReachableMainlandCandidate(pose: Pose, botCx: number, botFeetY: number): Collider | null {
-        if (!pose.grounded || pose.groundedId === null) return null;
-        const startId = pose.groundedId;
-        if (!this.graph.nodes.has(startId)) return null;
-
-        const now = performance.now();
-        const { idByNode, sizeByComponent } = this.getGraphComponents();
-        const startComponent = idByNode.get(startId) ?? -1;
-        const global = this.world.getAll().filter((c) => {
-            if (c.kind !== 'rect' || !c.flags.solid) return false;
-            if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
-            if (c.id === startId) return false;
-            if (this.targetPlatform && c.id === this.targetPlatform.id) return false;
-            if (this.recentWarpDestinations.includes(c.id)) return false;
-            if (this.isRegionTargetBlacklisted(startId, c.id)) return false;
-            return true;
-        });
-
-        let best: { collider: Collider; score: number } | null = null;
-        for (const c of global) {
-            if (!this.graph.nodes.has(c.id)) continue;
-            const path = this.findPathWithContext(startId, c.id, pose, true, 240);
-            if (!path || path.nodes.length < 2) continue;
-
-            const node = this.graph.nodes.get(c.id);
-            const validExitCount = node
-                ? node.edges.reduce((count, edge) => count + (edge.invalidUntil <= now ? 1 : 0), 0)
-                : 0;
-            if (validExitCount <= 0) continue;
-
-            const cx = (c.aabb.x1 + c.aabb.x2) / 2;
-            const dist = Math.hypot(cx - botCx, c.aabb.y1 - botFeetY);
-            const compId = idByNode.get(c.id) ?? -1;
-            const compSize = sizeByComponent.get(compId) ?? 1;
-            const crossComponentBonus = compId !== startComponent ? 170 : 0;
-            const routePotential = Math.min(120, validExitCount * 14 + compSize * 1.8);
-            const corridorPenalty = this.getCorridorFailurePenalty(startId, c.id);
-            const score = crossComponentBonus + routePotential + Math.min(110, dist * 0.12) - path.totalCost * 0.34 - corridorPenalty;
-            if (!best || score > best.score) {
-                best = { collider: c, score };
-            }
-        }
-
-        return best?.collider ?? null;
-    }
-
-    private findDirectedEscapeBase(pose: Pose, botCx: number, botFeetY: number): Collider | null {
-        const groundedId = pose.groundedId;
-        const { idByNode, sizeByComponent } = this.getGraphComponents();
-        const currentComponent = groundedId !== null ? (idByNode.get(groundedId) ?? -1) : -1;
-        const candidates = this.world.getAll().filter((c) => {
-            if (c.kind !== 'rect' || !c.flags.solid) return false;
-            if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
-            if (groundedId !== null && c.id === groundedId) return false;
-            if (this.recentWarpDestinations.includes(c.id)) return false;
-            return true;
-        });
-
-        let best: { collider: Collider; score: number } | null = null;
-        for (const c of candidates) {
-            const cx = (c.aabb.x1 + c.aabb.x2) / 2;
-            const dist = Math.hypot(cx - botCx, c.aabb.y1 - botFeetY);
-            const compId = idByNode.get(c.id) ?? -1;
-            const compSize = sizeByComponent.get(compId) ?? 1;
-            const routePotential = this.graph.nodes.has(c.id)
-                ? Math.min(120, (this.graph.nodes.get(c.id)?.edges.length ?? 0) * 9 + compSize * 2.2)
-                : 0;
-            const crossComponentBonus = compId !== currentComponent ? 180 : 0;
-            const verticalBonus = c.aabb.y1 < botFeetY ? 36 : 0;
-            const score = crossComponentBonus + routePotential + verticalBonus + Math.min(140, dist * 0.18);
-            if (!best || score > best.score) {
-                best = { collider: c, score };
-            }
-        }
-
-        return best?.collider ?? null;
-    }
 
     private activateCoordinateEscapeFromCollider(
         pose: Pose,
@@ -4694,19 +4581,19 @@ export class Brain {
         if (this.islandModeActive) {
             if (this.tryStartIslandEdgeEscape(pose, signature, reason)) return;
 
-            const mainland = this.findReachableMainlandCandidate(pose, botCx, botFeetY);
+            const mainland = this.targetSelector.findReachableMainlandCandidate(pose, botCx, botFeetY);
             if (mainland) {
                 primeFallbackTarget(mainland, 'mainland-anchor');
                 return;
             }
 
-            const directedBase = this.findDirectedEscapeBase(pose, botCx, botFeetY);
+            const directedBase = this.targetSelector.findDirectedEscapeBase(pose, botCx, botFeetY);
             if (directedBase) {
                 this.activateCoordinateEscapeFromCollider(pose, directedBase, signature, reason, 'directed-coord');
                 return;
             }
 
-            if (strictlyFilteredGlobal.length > 0 && this.tryPickCoordinateTarget(pose, strictlyFilteredGlobal, true, true)) {
+            if (strictlyFilteredGlobal.length > 0 && this.targetSelector.tryPickCoordinateTarget(pose, strictlyFilteredGlobal, true, true)) {
                 this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, ISLAND_MODE_FREEZE_SEC);
                 this.recordLog('LOOP_FALLBACK', pose, `sig=${signature} ${reason}: island-panic non-local coord`);
                 return;
@@ -4787,19 +4674,19 @@ export class Brain {
             }
         }
 
-        const mainland = this.findReachableMainlandCandidate(pose, botCx, botFeetY);
+        const mainland = this.targetSelector.findReachableMainlandCandidate(pose, botCx, botFeetY);
         if (mainland) {
             primeFallbackTarget(mainland, 'mainland-anchor');
             return;
         }
 
-        const directedBase = this.findDirectedEscapeBase(pose, botCx, botFeetY);
+        const directedBase = this.targetSelector.findDirectedEscapeBase(pose, botCx, botFeetY);
         if (directedBase) {
             this.activateCoordinateEscapeFromCollider(pose, directedBase, signature, reason, 'directed-coord');
             return;
         }
 
-        if (strictlyFilteredGlobal.length > 0 && this.tryPickCoordinateTarget(pose, strictlyFilteredGlobal, true, true)) {
+        if (strictlyFilteredGlobal.length > 0 && this.targetSelector.tryPickCoordinateTarget(pose, strictlyFilteredGlobal, true, true)) {
             this.recordLog('LOOP_FALLBACK', pose, `sig=${signature} ${reason}: escalated non-local coord`);
             return;
         }
@@ -4810,7 +4697,7 @@ export class Brain {
             if (pose.grounded && pose.groundedId === c.id) return false;
             return true;
         });
-        if (strictlyFilteredGlobal.length === 0 && relaxedGlobal.length > 0 && this.tryPickCoordinateTarget(pose, relaxedGlobal, true, true)) {
+        if (strictlyFilteredGlobal.length === 0 && relaxedGlobal.length > 0 && this.targetSelector.tryPickCoordinateTarget(pose, relaxedGlobal, true, true)) {
             this.recordLog('RELAX_RECENCY', pose, 'loop fallback relaxed recent warp exclusions');
             this.recordLog('LOOP_FALLBACK', pose, `sig=${signature} ${reason}: relaxed non-local coord`);
             return;
@@ -4847,279 +4734,6 @@ export class Brain {
         return true;
     }
 
-    /**
-     * Multi-factor platform scoring for intelligent target selection.
-     *
-     * Factors:
-     *  1. Distance        — prefer nearby but not trivially close
-     *  2. Vertical gain   — strongly prefer upward targets (climbing is interesting)
-     *  3. Novelty         — HARD penalty for repeat visits (uncapped, escalating)
-     *  4. Exploration     — reward platforms above the "highestReached" watermark
-     *  5. Reachability    — bonus for directly jumpable
-     *  6. Fairness        — equalizer that penalises over-visited and rewards under-visited
-     *  7. Line of sight   — visible platforms feel more intentional
-     */
-    private scoreTarget(pose: Pose, c: Collider, avgVisits: number, now: number, pathCost: number | null = null): number {
-        const botCx = pose.x + pose.width / 2;
-        const botFeetY = pose.y + pose.height;
-        const platCx = (c.aabb.x1 + c.aabb.x2) / 2;
-        const platW = c.aabb.x2 - c.aabb.x1;
-        const platH = c.aabb.y2 - c.aabb.y1;
-
-        const dx = Math.abs(platCx - botCx);
-        const dy = botFeetY - c.aabb.y1; // positive = platform is above bot
-        const dist = Math.hypot(dx, dy);
-
-        let score = 50; // Base score
-
-        // 1. Distance — favor medium/long routes to reduce repetitive local loops.
-        if (dist < 80) score -= 18;
-        else if (dist < 220) score += 4;
-        else if (dist < 520) score += 12;
-        else if (dist < 900) score += 18;
-        else if (dist < 1500) score += 12;
-        else score += 4;
-
-        // 2. Vertical gain — STRONG upward preference
-        if (dy > 20) {
-            const heightBonus = Math.min(dy * 0.12, 35);   // Up to +35 for height
-            score += heightBonus;
-            if (dy > 40 && dy <= MAX_SINGLE_HOP) score += 15; // Sweet spot for direct jump
-            else if (dy > MAX_SINGLE_HOP) score += 8;         // Waypoint routing helps
-        } else if (dy < -20) {
-            score -= Math.min(Math.abs(dy) * 0.06, 20);
-        }
-
-        // 3. Novelty / anti-repeat
-        const visits = this.visitCounts.get(c.id) || 0;
-        if (visits === 0) {
-            score += 20;   // Never-visited bonus — actively seek new platforms
-        } else {
-            score -= Math.min(48, visits * 8);
-        }
-        const fairnessDelta = visits - avgVisits;
-        if (fairnessDelta > 0.5) {
-            score -= Math.min(22, fairnessDelta * 4);
-        }
-        if (this.recentArrivals.slice(-12).includes(c.id)) {
-            score -= 32;
-        }
-
-        // 4. Exploration — reward unvisited vertical territory
-        if (c.aabb.y1 < this.highestReached) {
-            score += 20;
-        }
-
-        // 5. Commitment Stickiness (Hysteresis) to prevent Ping-Ponging
-        if (this.lockedTargetId !== null && c.id === this.lockedTargetId) {
-            score += 200; // Tremendous stickiness so the bot does not abandon a strategic target
-        } else if (this.targetPlatform !== null && c.id === this.targetPlatform.id) {
-            score += 150; // Stickiness for immediate waypoint
-        }
-
-        // 5. Reachability
-        if (dy > 0 && dy <= MAX_SINGLE_HOP && dx < 500) {
-            score += 10;
-        }
-        if (dy > MAX_SINGLE_HOP && dx < 100) {
-            score += 5;
-        }
-
-        // 6. Path Complexity Penalty — avoid physically close targets that require convoluted graph traversal
-        if (pathCost !== null) {
-            const costExcess = Math.max(0, pathCost - dist);
-            score -= (costExcess * 0.25);
-        }
-
-        // Penalize isolated/dead-end nodes to avoid selecting platforms that immediately trap reroutes.
-        const node = this.graph.nodes.get(c.id);
-        if (!node) {
-            score -= 22;
-        } else {
-            const viableExits = node.edges.reduce((count, e) => count + (e.invalidUntil <= now ? 1 : 0), 0);
-            if (viableExits === 0) score -= 28;
-            else if (viableExits === 1) score -= 10;
-            else score += Math.min(8, (viableExits - 1) * 2);
-        }
-
-        // Avoid no-op picks that are almost on top of the bot and offer little progress.
-        if (dist < 55 && Math.abs(dy) < 24) {
-            score -= 24;
-        }
-
-        // Penalize highly vertical surfaces as primary targets (prevents wall-center lock).
-        const verticalRatio = platH / Math.max(platW, 1);
-        if (verticalRatio > 2.5) score -= 45;
-        else if (verticalRatio > 1.7) score -= 20;
-
-        // 7. Line of sight bonus
-        const hasLOS = this.world.hasLineOfSight(botCx, pose.y + pose.height / 2, platCx, c.aabb.y1);
-        if (hasLOS) score += 10;
-
-        const breadcrumbPenalty = this.getBreadcrumbPenaltyForTarget(c.id, now);
-        if (breadcrumbPenalty > 0) score -= breadcrumbPenalty;
-
-        // 8. Random noise — breaks determinism across page refreshes.
-        //    ±15 is enough to shuffle similarly-scored candidates without
-        //    letting a bad platform beat a clearly better one.
-        score += (Math.random() - 0.5) * 30;
-
-        return score;
-    }
-
-    private getRecentBlockedTargetIds(currentGroundedId: number | null): Set<number> {
-        const blocked = new Set<number>();
-        const recent = this.recentArrivals.slice(-RECENT_TARGET_BLOCK_COUNT);
-        for (const id of recent) blocked.add(id);
-
-        if (currentGroundedId !== null) {
-            this.pruneRegionBlacklist();
-            const unreachable = this.recentUnreachable.get(currentGroundedId);
-            if (unreachable) {
-                const now = performance.now();
-                for (const entry of unreachable) {
-                    if (now - entry.time < REGION_BLACKLIST_TTL_MS) {
-                        blocked.add(entry.targetId);
-                    }
-                }
-            }
-
-            const regionEntries = this.regionBlacklist.get(currentGroundedId);
-            if (regionEntries) {
-                const now = performance.now();
-                for (const entry of regionEntries.values()) {
-                    if (entry.targetId !== null && entry.expiresAt > now) {
-                        blocked.add(entry.targetId);
-                    }
-                }
-            }
-        }
-        return blocked;
-    }
-
-    private tryPickCoordinateTarget(pose: Pose, candidates: Collider[], preferFar: boolean, force: boolean = false): boolean {
-        if (candidates.length === 0) return false;
-        if (!force && performance.now() - this.lastCoordinateFallbackTime < 8000) return false;
-
-        const botCx = pose.x + pose.width / 2;
-        const botFeetY = pose.y + pose.height;
-        const minDist = preferFar ? FAR_TARGET_MIN_DIST : 280;
-
-        const strictRanked = candidates
-            .filter(c => {
-                if (c.kind !== 'rect' || !c.flags.solid) return false;
-                if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
-                if (pose.groundedId !== null && c.id === pose.groundedId) return false;
-                if (this.targetPlatform && c.id === this.targetPlatform.id) return false;
-                if (this.recentWarpDestinations.includes(c.id)) return false;
-                if (pose.groundedId !== null && this.isRegionTargetBlacklisted(pose.groundedId, c.id)) return false;
-                return true;
-            })
-            .map(c => {
-                const cx = (c.aabb.x1 + c.aabb.x2) / 2;
-                const cy = c.aabb.y1;
-                const dist = Math.hypot(cx - botCx, cy - botFeetY);
-                return { collider: c, dist };
-            })
-            .sort((a, b) => b.dist - a.dist);
-
-        let ranked = strictRanked;
-        if (ranked.length === 0) {
-            ranked = candidates
-                .filter(c => {
-                    if (c.kind !== 'rect' || !c.flags.solid) return false;
-                    if ((c.aabb.x2 - c.aabb.x1) < MIN_PLATFORM_SIZE) return false;
-                    if (pose.groundedId !== null && c.id === pose.groundedId) return false;
-                    if (this.targetPlatform && c.id === this.targetPlatform.id) return false;
-                    return true;
-                })
-                .map(c => {
-                    const cx = (c.aabb.x1 + c.aabb.x2) / 2;
-                    const cy = c.aabb.y1;
-                    const dist = Math.hypot(cx - botCx, cy - botFeetY);
-                    return { collider: c, dist };
-                })
-                .sort((a, b) => b.dist - a.dist);
-            if (ranked.length > 0) {
-                this.recordLog('RELAX_RECENCY', pose, 'coordinate fallback relaxed recent warp exclusions');
-            }
-        }
-
-        if (ranked.length === 0) return false;
-        const farPool = ranked.filter(r => r.dist >= minDist);
-        const sourcePool = farPool.length > 0 ? farPool : ranked;
-        const sampleLimit = Math.min(12, sourcePool.length);
-        if (sampleLimit === 0) return false;
-
-        for (let i = 0; i < sampleLimit; i++) {
-            const pick = sourcePool[Math.floor(Math.random() * sampleLimit)];
-            const base = pick.collider;
-            const baseCx = (base.aabb.x1 + base.aabb.x2) / 2;
-            const baseW = Math.max(20, base.aabb.x2 - base.aabb.x1);
-
-            const xJitter = (Math.random() - 0.5) * Math.min(360, baseW + 240);
-            const x = Math.max(20, Math.min(window.innerWidth - 20, baseCx + xJitter));
-
-            const preferAbove = Math.random() < 0.75;
-            const yCandidate = preferAbove
-                ? base.aabb.y1 - (70 + Math.random() * 220)
-                : base.aabb.y1 + (35 + Math.random() * 140);
-            const y = Math.max(30, Math.min(window.innerHeight - 30, yCandidate));
-
-            // Ensure target coordinate is in free space with enough room for the bot
-            const probe: AABB = { x1: x - 12, y1: y - 42, x2: x + 12, y2: y + 2 };
-            const blocked = this.world.query(probe).some(c => c.kind === 'rect' && c.flags.solid && !c.flags.oneWay);
-            if (blocked) continue;
-
-            const coordDist = Math.hypot(x - botCx, y - botFeetY);
-            if (coordDist < minDist * 0.85) continue;
-
-            this.targetPlatform = null;
-            this.clearTargetLock();
-            this.targetX = x;
-            this.autoTargetY = y;
-            this.currentState = 'seek';
-            this.bestProgressDist = Infinity;
-            this.progressStagnationTimer = Math.max(this.progressStagnationTimer, ESCALATION_TIMER_FLOOR);
-            this.fsmStagnationTimer = Math.max(this.fsmStagnationTimer, ESCALATION_TIMER_FLOOR);
-            this.approachPhase = 'direct';
-            this.approachX = null;
-            this.seekDiagTimer = 0;
-            this.lastSeekPose = null;
-            this.stallTimer = 0;
-            this.facingFlipTimer = 0;
-            this.facingFlipCount = 0;
-            this.lastFacingSeen = 0;
-            this.loopWarned = false;
-            this.moveCommitDir = 0;
-            this.moveCommitTimer = 0;
-            this.dropEdgeX = null;
-            this.dropGroundId = null;
-            this.dropLockTimer = 0;
-            this.navState = 'nav-ready';
-            this.takeoffZone = null;
-            this.patienceTimer = 0;
-            this.breadcrumbStack = [];
-            this.rememberWarpDestination(base.id);
-            this.boostRecoveryPressure('coordinate-escape');
-
-            this.lastCoordinateFallbackTime = performance.now();
-            // Force commitment to this recovery mode (suppress retargeting)
-            this.targetSelectFreezeTimer = Math.max(this.targetSelectFreezeTimer, this.islandModeActive ? ISLAND_MODE_FREEZE_SEC : 2.0);
-
-            this.resetManeuverTracking();
-            this.resetShaftClimbState();
-            this.resetTicTacState();
-            this.recordLog(
-                'NEW_COORD_TARGET',
-                pose,
-                `coord(${Math.round(x)},${Math.round(y)}) base=ID${base.id} dist=${Math.round(coordDist)} far=${preferFar ? 'y' : 'n'}`
-            );
-            return true;
-        }
-
-        return false;
-    }
 
     private computeGaugedJump(pose: Pose, targetDx: number, heightDiff: number): number | null {
         // Gauged jumps are for upward targets where full jump would likely overshoot.
@@ -5157,25 +4771,6 @@ export class Brain {
         return Math.max(GAUGED_JUMP_MIN, Math.min(GAUGED_JUMP_MAX, bestGauge));
     }
 
-    private describeCandidateForLog(pose: Pose, s: { collider: Collider; score: number }): string {
-        const c = s.collider;
-        const botCx = pose.x + pose.width / 2;
-        const botFeetY = pose.y + pose.height;
-        const cx = (c.aabb.x1 + c.aabb.x2) / 2;
-        const dx = Math.round(cx - botCx);
-        const dy = Math.round(botFeetY - c.aabb.y1);
-        const prediction = this.predictTrajectory(pose, cx);
-        const reachable =
-            prediction.landingX >= c.aabb.x1 - 20 &&
-            prediction.landingX <= c.aabb.x2 + 20 &&
-            Math.abs(prediction.landingY - c.aabb.y1) < 120;
-        const hasLOS = this.world.hasLineOfSight(botCx, pose.y + pose.height / 2, cx, c.aabb.y1);
-        const landingDx = Math.round(prediction.landingX - cx);
-        const landingDy = Math.round(prediction.landingY - c.aabb.y1);
-        const width = Math.round(c.aabb.x2 - c.aabb.x1);
-        const height = Math.round(c.aabb.y2 - c.aabb.y1);
-        return `ID${c.id} s=${Math.round(s.score)} d=(${dx},${dy}) land=(${landingDx},${landingDy}) ${reachable ? 'reach' : 'nreach'} ${hasLOS ? 'los' : 'nlos'} ${c.flags.oneWay ? '1w' : 'solid'} sz=${width}x${height}`;
-    }
 
     private runSeekDiagnostics(
         pose: Pose,
@@ -5358,7 +4953,7 @@ export class Brain {
                 if (this.recentWarpDestinations.includes(c.id)) return false;
                 return true;
             });
-            if (this.tryPickCoordinateTarget(pose, strictPool, true, true)) {
+            if (this.targetSelector.tryPickCoordinateTarget(pose, strictPool, true, true)) {
                 return;
             }
         }
@@ -5455,7 +5050,7 @@ export class Brain {
             this.recordLog('RELAX_OVERLAP', pose, `fallback keep=${validRelaxed.length}/${candidates.length}`);
         }
         if (pool.length === 0) {
-            if (this.tryPickCoordinateTarget(pose, this.world.getAll(), true, true)) {
+            if (this.targetSelector.tryPickCoordinateTarget(pose, this.world.getAll(), true, true)) {
                 this.recordLog('NO_TARGETS', pose, `view=${candidates.length} valid=0 -> forced coordinate`);
                 return;
             }
@@ -5512,7 +5107,7 @@ export class Brain {
             && uniqueRecentCount <= Math.max(2, Math.floor(recentWindow.length * 0.45));
         const preferFar = repeatPressure || this.retryCount > 0 || Math.random() < 0.35;
 
-        const blockedRecent = this.getRecentBlockedTargetIds(pose.groundedId);
+        const blockedRecent = this.targetSelector.getRecentBlockedTargetIds(pose.groundedId);
         const recencyPool = blockedRecent.size > 0 ? pool.filter(c => !blockedRecent.has(c.id)) : pool;
         let scoringPool = recencyPool.length > 0 ? recencyPool : pool;
         if (recencyPool.length === 0 && blockedRecent.size > 0) {
@@ -5528,7 +5123,7 @@ export class Brain {
             );
             if (Math.random() < coordPickChance) {
                 const coordPool = recencyPool.length > 0 ? recencyPool : pool;
-                if (this.tryPickCoordinateTarget(pose, coordPool, preferFar)) {
+                if (this.targetSelector.tryPickCoordinateTarget(pose, coordPool, preferFar)) {
                     return;
                 }
             }
@@ -5623,7 +5218,7 @@ export class Brain {
 
         // Score every candidate
         const scoreNow = performance.now();
-        const scored = scoringPool.map(c => ({ collider: c, score: this.scoreTarget(pose, c, avgVisits, scoreNow, reachableCosts.get(c.id) ?? null) }));
+        const scored = scoringPool.map(c => ({ collider: c, score: this.targetSelector.scoreTarget(pose, c, avgVisits, scoreNow, reachableCosts.get(c.id) ?? null) }));
         const scoredBeforeReachFilter = scored.length;
 
         // When airborne, filter to trajectory-reachable platforms if any exist
@@ -5726,7 +5321,7 @@ export class Brain {
         this.patienceTimer = 0;
         this.navSlipCount = 0;
         this.navSlipTimer = 0;
-        const topSummary = scored.slice(0, 3).map(s => this.describeCandidateForLog(pose, s)).join(' || ');
+        const topSummary = scored.slice(0, 3).map(s => this.targetSelector.describeCandidateForLog(pose, s)).join(' || ');
         const nearest = scoringPool.reduce((best, c) => {
             const cx = (c.aabb.x1 + c.aabb.x2) / 2;
             const cy = c.aabb.y1;
@@ -5977,7 +5572,7 @@ export class Brain {
             if (startId !== null && this.isRegionTargetBlacklisted(startId, c.id)) return false;
             return (c.aabb.x2 - c.aabb.x1) >= MIN_PLATFORM_SIZE && c.aabb.y1 < pose.y + pose.height && c.aabb.y1 > ty - 30;
         });
-        const blockedRecent = this.getRecentBlockedTargetIds(pose.groundedId);
+        const blockedRecent = this.targetSelector.getRecentBlockedTargetIds(pose.groundedId);
         const reroutePool = blockedRecent.size > 0
             ? nearby.filter(c => !blockedRecent.has(c.id))
             : nearby;
@@ -6098,63 +5693,8 @@ export class Brain {
         }
     }
 
-    /**
-     * Find the best intermediate platform between the bot and a high target.
-     * Returns a stepping-stone collider that is between the bot's Y and the target's Y,
-     * within reachable hop distance.
-     */
-    private findWaypointBelow(pose: Pose, finalTarget: Collider): Collider | null {
-        const botFeetY = pose.y + pose.height;
-        const targetY = finalTarget.aabb.y1;
-        const botCx = pose.x + pose.width / 2;
 
-        // Search between bot and target vertically, prefer horizontally close
-        const searchAABB: AABB = {
-            x1: botCx - 500,
-            y1: targetY,
-            x2: botCx + 500,
-            y2: botFeetY
-        };
-
-        const candidates = this.world.query(searchAABB).filter(c => {
-            if (c.id === finalTarget.id) return false;
-            const w = c.aabb.x2 - c.aabb.x1;
-            if (w < MIN_PLATFORM_SIZE) return false;
-            // Must be above the bot
-            if (c.aabb.y1 >= botFeetY - 10) return false;
-            // Must be below the final target (it's a stepping stone)
-            if (c.aabb.y1 <= targetY + 10) return false;
-            // Must be within reachable hop height
-            const hopHeight = botFeetY - c.aabb.y1;
-            if (hopHeight > MAX_SINGLE_HOP) return false;
-            if (hopHeight < 30) return false;
-            // Don't re-pick the current platform
-            if (pose.grounded && pose.groundedId === c.id) return false;
-            return true;
-        });
-
-        if (candidates.length === 0) return null;
-
-        // Score waypoints: prefer HIGH platforms that are HORIZONTALLY CLOSE.
-        // Pure "pick highest" causes the bot to fly across the map for a barely-higher platform.
-        candidates.sort((a, b) => {
-            const aCx = (a.aabb.x1 + a.aabb.x2) / 2;
-            const bCx = (b.aabb.x1 + b.aabb.x2) / 2;
-            // Height gain (higher = lower y1 = better, want to maximize)
-            const aHeight = botFeetY - a.aabb.y1;
-            const bHeight = botFeetY - b.aabb.y1;
-            // Horizontal distance penalty
-            const aDx = Math.abs(aCx - botCx);
-            const bDx = Math.abs(bCx - botCx);
-            // Score: height gain minus horizontal penalty (weighted)
-            const aScore = aHeight - aDx * 0.5;
-            const bScore = bHeight - bDx * 0.5;
-            return bScore - aScore; // Descending
-        });
-        return candidates[0];
-    }
-
-    private predictTrajectory(pose: Pose, txBounds: number | { minX: number, maxX: number }): { landingX: number; landingY: number } {
+    public predictTrajectory(pose: Pose, txBounds: number | { minX: number, maxX: number }): { landingX: number; landingY: number } {
         let simX = pose.x + pose.width / 2;
         let simY = pose.y + pose.height / 2;
         let simVx = pose.vx;
